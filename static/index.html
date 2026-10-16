@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Readroom — a place to listen</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Readroom home"><span class="brandmark">◖</span> readroom<span class="brand-dot">.</span></a>
+    <div class="sidebar-intro">Good words. A voice to match.</div>
+    <button class="button primary add-article" id="new-article"><span>＋</span> Add an article</button>
+    <div class="section-label library-label">YOUR LIBRARY <span id="library-count">0</span></div>
+    <nav id="library" aria-label="Saved articles"></nav>
+    <div class="sidebar-bottom"><span class="status-dot"></span><div><strong>Locally spoken</strong><small>Your articles and audio stay here.</small></div></div>
+  </aside>
+
+  <main>
+    <header class="topbar"><span>THE LISTENING DESK</span><span class="machine-status" id="machine-status">Connecting to your models…</span></header>
+    <div class="page-content">
+      <section class="welcome" id="welcome"><div class="eyebrow">WORDS, AT YOUR OWN PACE</div><h1>A little room<br>for a good read.</h1><p>Bring an article. Find your narrator.<br>Keep every reading, and listen again.</p><button class="button primary" id="welcome-add">Add your first article <span>↗</span></button><button class="button subtle" id="load-sample">Try a sample reading</button><div class="welcome-lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="welcome-note">THREE LOCAL VOICES. ONE SAVED ARTICLE. NO API BILL.</div></section>
+      <div id="workspace" hidden>
+        <section class="article-heading"><div class="eyebrow" id="article-source">SAVED READING</div><h1 id="article-title"></h1><div class="article-meta"><span id="article-meta"></span><a id="source-link" target="_blank" rel="noopener noreferrer" hidden>View original ↗</a><a id="save-text">Export text ↓</a></div></section>
+        <section class="studio" aria-labelledby="studio-title"><div class="section-heading"><div><h2 id="studio-title">Find your voice</h2><p>Same words, three different readings. Each version is saved.</p></div><button id="render-all" class="button outline small">Render all three <span>↗</span></button></div><div id="model-cards" class="model-cards"></div><div class="studio-note"><span>↳</span> One model at a time. Listen as paragraphs arrive, or render the whole article first.</div><div id="saved-readings" class="saved-readings"></div></section>
+        <section class="reader"><div class="reader-top"><span class="section-label">THE ARTICLE</span><span id="reading-progress">Select a voice to start listening</span></div><div id="article-body" class="article-body"></div><div class="end-mark">◆</div></section>
+      </div>
+    </div>
+  </main>
+
+  <footer class="player" id="player" hidden>
+    <div class="player-info"><span class="record-icon">◉</span><div><strong id="player-voice">Choose a voice</strong><span id="player-state">Ready when you are</span></div></div>
+    <div class="transport"><button class="icon-button" id="previous" aria-label="Previous chunk">↤</button><button class="play-button" id="play-toggle" aria-label="Play">▶</button><button class="icon-button" id="next" aria-label="Next chunk">↦</button></div>
+    <div class="timeline"><label for="seek" id="chunk-label">Paragraph 1</label><input id="seek" type="range" min="0" max="100" value="0" aria-label="Position in current audio chunk"><span id="time-label">0:00 / 0:00</span></div>
+    <label class="speed-label" for="speed">Speed<select id="speed"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+  </footer>
+
+  <dialog id="import-dialog"><form id="import-form"><div class="dialog-heading"><div><span class="eyebrow">MAKE YOURSELF AT HOME</span><h2>Something worth listening to.</h2></div><button type="button" class="icon-button" id="close-dialog" aria-label="Close">×</button></div><div class="tabs" role="tablist" aria-label="Article source"><button type="button" class="tab active" id="url-tab" role="tab" aria-selected="true">Article link</button><button type="button" class="tab" id="text-tab" role="tab" aria-selected="false">Paste text</button></div><div id="url-fields"><label for="article-url">Article URL</label><input id="article-url" type="url" placeholder="https://example.com/a-good-read"><p class="field-note">We’ll extract the readable article and save a local copy. For paywalls or script-heavy pages, paste the text.</p></div><div id="text-fields" hidden><label for="paste-title">Title</label><input id="paste-title" placeholder="Give this reading a name" maxlength="300"><label for="paste-text">Article text</label><textarea id="paste-text" rows="9" placeholder="Paste your article here. Leave a blank line between paragraphs." maxlength="250000"></textarea></div><div id="import-error" class="error" role="alert" hidden></div><div class="dialog-footer"><span>Saved once. Read in every voice.</span><button class="button primary" type="submit" id="import-submit">Save to library <span>↗</span></button></div></form></dialog>
+  <div id="toast" role="status" hidden></div>
+</body></html>

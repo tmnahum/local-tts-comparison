@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+httpx
+trafilatura
+huggingface_hub
+soundfile
+numpy
+pytest

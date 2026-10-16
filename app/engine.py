@@ -1,0 +1,166 @@
+import hashlib
+import json
+import os
+import queue
+import selectors
+import subprocess
+import threading
+import time
+
+from .catalog import ROOT, MODELS
+from .storage import DATA, database, article
+
+
+def clip_key(model, voice, style, text):
+    revision = (ROOT / 'models' / model / '.ready.json').read_text() if (ROOT / 'models' / model / '.ready.json').exists() else ''
+    return hashlib.sha256(json.dumps([2, model, voice, style, text, revision], ensure_ascii=False).encode()).hexdigest()
+
+
+def clip_info(key):
+    with database() as db:
+        row = db.execute('SELECT * FROM clips WHERE key=?', (key,)).fetchone()
+    if row and (DATA / 'audio' / (key + '.wav')).exists():
+        return dict(row) | {'url': '/api/audio/' + key + '.wav'}
+    return None
+
+
+def rendition_info(row):
+    result = dict(row)
+    doc = article(result['article_id'])
+    keys = [clip_key(result['model'], result['voice'], result['style'], chunk['text']) for chunk in doc['chunks']]
+    cached = {}
+    with database() as db:
+        for offset in range(0, len(keys), 500):
+            batch = keys[offset:offset + 500]
+            placeholders = ','.join('?' for _ in batch)
+            for clip in db.execute(f'SELECT * FROM clips WHERE key IN ({placeholders})', batch):
+                if (DATA / 'audio' / (clip['key'] + '.wav')).exists():
+                    cached[clip['key']] = dict(clip) | {'url': '/api/audio/' + clip['key'] + '.wav'}
+    result['clips'] = [cached.get(key) for key in keys]
+    result['ready'] = sum(c is not None for c in result['clips'])
+    result['total'] = len(result['clips'])
+    result['audio_seconds'] = sum(c['duration'] for c in result['clips'] if c)
+    result['generation_seconds'] = sum(c['generation_seconds'] for c in result['clips'] if c)
+    result['peak_vram_gb'] = max([c['peak_vram_gb'] for c in result['clips'] if c] or [0])
+    return result
+
+
+class Engine:
+    def __init__(self):
+        self.queue = queue.Queue()
+        self.process = None
+        self.log = None
+        self.loaded_model = None
+        self.current = None
+        self.phase = 'idle'
+        self.load_seconds = 0
+        self.stopping = False
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def enqueue(self, rendition_id):
+        self.queue.put(rendition_id)
+
+    def unload(self):
+        if self.process:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
+            for pipe in (self.process.stdin, self.process.stdout):
+                pipe.close()
+            self.process = None
+        if self.log:
+            self.log.close()
+            self.log = None
+        self.loaded_model = None
+
+    def close(self):
+        self.stopping = True
+        self.queue.put(None)
+        self.unload()
+
+    def receive(self, timeout=600):
+        with selectors.DefaultSelector() as selector:
+            selector.register(self.process.stdout, selectors.EVENT_READ)
+            if not selector.select(timeout):
+                raise RuntimeError('Model timed out. Retry this reading; details are in data/logs/.')
+            line = self.process.stdout.readline()
+        if not line:
+            raise RuntimeError('Model process exited. See data/logs/' + str(self.loaded_model) + '.log.')
+        return json.loads(line)
+
+    def load(self, model):
+        if self.loaded_model == model and self.process and self.process.poll() is None:
+            return
+        self.unload()
+        self.phase = 'loading'
+        env = os.environ.copy()
+        env['PYTHONUNBUFFERED'] = '1'
+        self.log = open(DATA / 'logs' / (model + '.log'), 'a')
+        self.process = subprocess.Popen([str(ROOT / MODELS[model]['environment'] / 'bin/python'), str(ROOT / 'app/worker.py'), model], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log, text=True, bufsize=1, cwd=ROOT, env=env)
+        self.loaded_model = model
+        message = self.receive()
+        if not message.get('ready'):
+            raise RuntimeError(message.get('error', 'Model failed to load.'))
+        self.load_seconds = message['load_seconds']
+
+    def run(self):
+        while not self.stopping:
+            try:
+                rid = self.queue.get(timeout=120)
+            except queue.Empty:
+                self.unload()  # Give the GPU back after two idle minutes.
+                continue
+            if rid is None:
+                return
+            try:
+                with database() as db:
+                    row = db.execute('SELECT * FROM renditions WHERE id=?', (rid,)).fetchone()
+                if not row or row['status'] != 'queued':
+                    continue
+                self.current = rid
+                doc = article(row['article_id'])
+                for chunk in doc['chunks']:
+                    with database() as db:
+                        state = db.execute('SELECT status FROM renditions WHERE id=?', (rid,)).fetchone()[0]
+                    if state == 'paused' or self.stopping:
+                        break
+                    key = clip_key(row['model'], row['voice'], row['style'], chunk['text'])
+                    if clip_info(key):
+                        continue
+                    with database() as db:
+                        db.execute("UPDATE renditions SET status=? WHERE id=? AND status!='paused'", ('loading' if self.loaded_model != row['model'] else 'generating', rid))
+                    self.load(row['model'])
+                    self.phase = 'generating'
+                    with database() as db:
+                        state = db.execute('SELECT status FROM renditions WHERE id=?', (rid,)).fetchone()[0]
+                        if state == 'paused':
+                            break
+                        db.execute("UPDATE renditions SET status='generating' WHERE id=?", (rid,))
+                    output = DATA / 'audio' / (key + '.partial.wav')
+                    self.process.stdin.write(json.dumps({'text': chunk['text'], 'voice': row['voice'], 'style': row['style'], 'output': str(output)}) + '\n')
+                    self.process.stdin.flush()
+                    result = self.receive()
+                    if not result.get('ok'):
+                        raise RuntimeError(result.get('error', 'Audio generation failed.'))
+                    output.replace(DATA / 'audio' / (key + '.wav'))
+                    with database() as db:
+                        db.execute('INSERT OR REPLACE INTO clips VALUES (?,?,?,?,?)', (key, result['duration'], result['generation_seconds'], result['peak_vram_gb'], result['sample_rate']))
+                else:
+                    with database() as db:
+                        db.execute("UPDATE renditions SET status='complete', error=NULL WHERE id=?", (rid,))
+            except Exception as exc:
+                with database() as db:
+                    db.execute("UPDATE renditions SET status='error', error=? WHERE id=?", (str(exc), rid))
+                self.unload()
+            finally:
+                self.phase = 'idle'
+                self.current = None
+
+
+engine = Engine()

@@ -1,0 +1,5 @@
+{
+  "kokoro": {"repo": "hexgrad/Kokoro-82M", "revision": "f3ff3571791e39611d31c381e3a41a3af07b4987"},
+  "chatterbox": {"repo": "ResembleAI/chatterbox-turbo", "revision": "749d1c1a46eb10492095d68fbcf55691ccf137cd"},
+  "qwen": {"repo": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", "revision": "0c0e3051f131929182e2c023b9537f8b1c68adfe"}
+}

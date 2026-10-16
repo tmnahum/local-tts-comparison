@@ -1,0 +1,44 @@
+import json
+import os
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
+
+from .catalog import ROOT
+
+DATA = Path(os.environ.get('READROOM_DATA', ROOT / 'data'))
+for folder in ('articles', 'audio', 'logs'):
+    (DATA / folder).mkdir(parents=True, exist_ok=True)
+
+
+@contextmanager
+def database():
+    connection = sqlite3.connect(DATA / 'readroom.sqlite3', timeout=30)
+    connection.row_factory = sqlite3.Row
+    try:
+        yield connection
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def initialize():
+    with database() as db:
+        db.execute('PRAGMA journal_mode=WAL')
+        db.executescript('''
+        CREATE TABLE IF NOT EXISTS articles (id TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT, byline TEXT, paragraphs TEXT NOT NULL, chunks TEXT NOT NULL, created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS renditions (id TEXT PRIMARY KEY, article_id TEXT NOT NULL, model TEXT NOT NULL, voice TEXT NOT NULL, style TEXT NOT NULL, status TEXT NOT NULL, error TEXT, created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS clips (key TEXT PRIMARY KEY, duration REAL, generation_seconds REAL, peak_vram_gb REAL, sample_rate INTEGER);
+        ''')
+        db.execute("UPDATE renditions SET status='paused' WHERE status IN ('queued','loading','generating')")
+
+
+def article(article_id):
+    with database() as db:
+        row = db.execute('SELECT * FROM articles WHERE id=?', (article_id,)).fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    result['paragraphs'] = json.loads(result['paragraphs'])
+    result['chunks'] = json.loads(result['chunks'])
+    return result
