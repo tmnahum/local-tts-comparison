@@ -102,3 +102,38 @@ for quant in ('q4', 'q8'):
         'capabilities': '2E has four fixed speakers · Cloning is available in the separate Air/Nano models, not 2E · Seven emotions · Optional generated word timings',
         'requires_models': ['neutts-codec'],
     }
+
+# Overall grades published by Kokoro, not cross-model benchmark scores.
+KOKORO_VOICE_GRADES = {'af_heart': 'A',
+ 'af_alloy': 'C',
+ 'af_aoede': 'C+',
+ 'af_bella': 'A-',
+ 'af_jessica': 'D',
+ 'af_kore': 'C+',
+ 'af_nicole': 'B-',
+ 'af_nova': 'C',
+ 'af_river': 'D',
+ 'af_sarah': 'C+',
+ 'af_sky': 'C-',
+ 'am_adam': 'F+',
+ 'am_echo': 'D',
+ 'am_eric': 'D',
+ 'am_fenrir': 'C+',
+ 'am_liam': 'D',
+ 'am_michael': 'C+',
+ 'am_onyx': 'D',
+ 'am_puck': 'C+',
+ 'am_santa': 'D-',
+ 'bf_alice': 'D',
+ 'bf_emma': 'B-',
+ 'bf_isabella': 'C',
+ 'bf_lily': 'D',
+ 'bm_daniel': 'D',
+ 'bm_fable': 'C',
+ 'bm_george': 'C',
+ 'bm_lewis': 'D+'}
+MODELS['kokoro']['voice_grade_source'] = 'https://huggingface.co/hexgrad/Kokoro-82M/blob/f3ff3571791e39611d31c381e3a41a3af07b4987/VOICES.md'
+for voice in MODELS['kokoro']['voices']:
+    voice['grade'] = KOKORO_VOICE_GRADES[voice['id']]
+    name, accent = voice['name'].split(' · ', 1)
+    voice['name'] = f"{name} ({voice['grade']}) · {accent}"
