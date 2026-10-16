@@ -5,7 +5,16 @@ MODELS = {
     'kokoro': {
         'name': 'Kokoro', 'size': '82M', 'description': 'Light, clear, and quick. The everyday reader.',
         'license': 'Apache-2.0', 'default_voice': 'af_heart',
-        'voices': [{'id': v, 'name': n} for v, n in [('af_heart', 'Heart · American'), ('af_bella', 'Bella · American'), ('am_michael', 'Michael · American'), ('bf_emma', 'Emma · British'), ('bm_george', 'George · British')]],
+        'voices': [
+            {'id': prefix + '_' + name, 'name': name.title() + ' · ' + accent}
+            for prefix, accent, names in [
+                ('af', 'American', 'heart alloy aoede bella jessica kore nicole nova river sarah sky'),
+                ('am', 'American', 'adam echo eric fenrir liam michael onyx puck santa'),
+                ('bf', 'British', 'alice emma isabella lily'),
+                ('bm', 'British', 'daniel fable george lewis'),
+            ]
+            for name in names.split()
+        ],
         'environment': '.venv-tts', 'styles': False,
     },
     'chatterbox': {

@@ -502,3 +502,15 @@ def test_neutts_emotion_defaults_and_saved_identity(client):
     assert plain['id'] == neutral['id'] != happy['id']
     assert client.post('/api/voices', json={'model': 'neutts-q4', 'style': 'whisper'}).status_code == 422
     assert client.post('/api/voices', json={'model': 'neutts-q8', 'voice': 'unknown'}).status_code == 422
+
+
+def test_all_english_kokoro_voices_are_selectable(client):
+    from app.catalog import MODELS
+    voices = MODELS['kokoro']['voices']
+    assert len(voices) == len({v['id'] for v in voices}) == 28
+    assert sum(v['id'].startswith('a') for v in voices) == 20
+    assert sum(v['id'].startswith('b') for v in voices) == 8
+    for voice in voices:
+        result = client.post('/api/voices', json={'model': 'kokoro', 'voice': voice['id']})
+        assert result.status_code == 200
+        assert result.json()['voice'] == voice['id']

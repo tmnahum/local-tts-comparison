@@ -10,7 +10,7 @@ from huggingface_hub import snapshot_download
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = json.loads((ROOT / 'models-manifest.json').read_text())
 SPECS = {
-    'kokoro': ('hexgrad/Kokoro-82M', ['config.json', 'kokoro-v1_0.pth', 'voices/af_heart.pt', 'voices/af_bella.pt', 'voices/am_michael.pt', 'voices/bf_emma.pt', 'voices/bm_george.pt', 'LICENSE', 'README.md']),
+    'kokoro': ('hexgrad/Kokoro-82M', ['config.json', 'kokoro-v1_0.pth', 'voices/af_*.pt', 'voices/am_*.pt', 'voices/bf_*.pt', 'voices/bm_*.pt', 'VOICES.md', 'LICENSE', 'README.md']),
     'qwen': ('Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice', ['*.json', '*.safetensors', '*.txt', '*.model', '*.tiktoken', 'README.md', 'LICENSE']),
     'qwen-small': ('Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice', ['*.json', '*.safetensors', '*.txt', '*.model', '*.tiktoken', 'README.md', 'LICENSE']),
     'chatterbox': ('ResembleAI/chatterbox-turbo', ['*.json', '*.txt', 'conds.pt', 've.safetensors', 's3gen_meanflow.safetensors', 't3_turbo_v1.safetensors', 'README.md', 'LICENSE']),
