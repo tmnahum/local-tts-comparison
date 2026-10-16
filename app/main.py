@@ -13,7 +13,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .catalog import ROOT, MODELS
-from .engine import engine, rendition_info, queue_rank
+from .pronunciation import apply_rules
+from .engine import engine, rendition_info, queue_rank, estimate_queue
 from .fetcher import fetch_article
 from .storage import DATA, database, initialize, article
 from .text import paragraphs_from_text, chunk_paragraphs
@@ -52,6 +53,46 @@ class RenditionInput(BaseModel):
     model: str
     voice: str = ''
     style: str = Field(default='', max_length=400)
+    audition: bool = False
+
+
+class FeedbackInput(RenditionInput):
+    rating: int = Field(default=0, ge=-1, le=1)
+    notes: str = Field(default='', max_length=1000)
+
+
+class PronunciationRule(BaseModel):
+    word: str = Field(min_length=1, max_length=100)
+    replacement: str = Field(min_length=1, max_length=200)
+
+
+class PronunciationsInput(BaseModel):
+    rules: list[PronunciationRule] = Field(max_length=100)
+
+
+@app.get('/api/pronunciations')
+def pronunciations():
+    with database() as db:
+        row = db.execute("SELECT value FROM preferences WHERE key='pronunciations'").fetchone()
+    return json.loads(row['value']) if row else []
+
+
+@app.post('/api/pronunciations')
+def set_pronunciations(body: PronunciationsInput):
+    rules = [r.model_dump() for r in body.rules]
+    if any(not r['word'].strip() or not r['replacement'].strip() for r in rules) or len({r['word'] for r in rules}) != len(rules):
+        raise HTTPException(422, 'Use nonempty, unique words for pronunciation overrides.')
+    with database() as db:
+        db.execute("INSERT OR REPLACE INTO preferences VALUES ('pronunciations', ?)", (json.dumps(rules),))
+    return rules
+
+
+@app.post('/api/voices/feedback')
+def voice_feedback(body: FeedbackInput):
+    saved = save_voice(body)
+    with database() as db:
+        db.execute('UPDATE voice_selections SET rating=?,notes=? WHERE id=?', (body.rating, body.notes, saved['id']))
+    return {'id': saved['id'], 'rating': body.rating, 'notes': body.notes}
 
 
 class StarInput(BaseModel):
@@ -135,7 +176,7 @@ def render_queue():
         rows = db.execute("SELECT r.*, a.title FROM renditions r JOIN articles a ON a.id=r.article_id WHERE r.status IN ('queued','loading','generating') ORDER BY r.queued_at,r.rowid").fetchall()
     jobs = [rendition_info(row) for row in sorted(rows, key=queue_rank)]
     active = next((r for r in jobs if r['id'] == engine.current), None)
-    return {'active': active, 'queued': [r for r in jobs if r is not active]}
+    return {'active': active, 'queued': [r for r in jobs if r is not active], **estimate_queue(jobs)}
 
 
 @app.post('/api/queue/cancel')
@@ -192,7 +233,20 @@ def create_rendition(article_id: str, body: RenditionInput):
     voice, style = validate_selection(body)
     if not (ROOT / 'models' / body.model / '.ready.json').exists() or any(not (ROOT / 'models' / dep / '.ready.json').exists() for dep in MODELS[body.model].get('requires_models', [])):
         raise HTTPException(409, 'This model is still downloading.')
-    rid = hashlib.sha256(json.dumps([article_id, body.model, voice, style, 'three-paragraphs-v1']).encode()).hexdigest()[:24]
+    rules = pronunciations()
+    identity = [article_id, body.model, voice, style, 'three-paragraphs-v1']
+    if rules:
+        identity.append(rules)
+    if body.audition:
+        identity.append('audition')
+    rid = hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:24]
+    chunks = chunk_paragraphs(doc['paragraphs'])
+    if body.audition:
+        chunks = chunks[:1]
+    for chunk in chunks:
+        spoken, edits = apply_rules(chunk['text'], rules)
+        if edits:
+            chunk['source_text'], chunk['text'], chunk['pronunciation_edits'] = chunk['text'], spoken, edits
     with engine.lock, database() as db:
         db.execute('BEGIN IMMEDIATE')
         existing = db.execute('SELECT * FROM renditions WHERE id=?', (rid,)).fetchone()
@@ -200,7 +254,7 @@ def create_rendition(article_id: str, body: RenditionInput):
         enqueue = not existing or (existing['status'] in ('error', 'paused') and (not existing['timing_requested'] or saved['ready'] < saved['total'])) or (existing['status'] == 'complete' and body.model == 'kokoro' and not saved['has_word_timings'])
         if not existing:
             now = datetime.now(timezone.utc).isoformat()
-            db.execute('INSERT INTO renditions (id,article_id,model,voice,style,status,error,created,chunks,queued_at) VALUES (?,?,?,?,?,?,?,?,?,?)', (rid, article_id, body.model, voice, style, 'queued', None, now, json.dumps(chunk_paragraphs(doc['paragraphs'])), now))
+            db.execute('INSERT INTO renditions (id,article_id,model,voice,style,status,error,created,chunks,queued_at,audition,pronunciations) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)', (rid, article_id, body.model, voice, style, 'queued', None, now, json.dumps(chunks), now, int(body.audition), json.dumps(rules)))
         elif enqueue:
             db.execute("UPDATE renditions SET status='queued', error=NULL,timing_requested=0,queued_at=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), rid))
         db.commit()

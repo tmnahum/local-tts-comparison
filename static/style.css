@@ -14,3 +14,5 @@
 .timing-button{margin-top:12px}.reader-top #generate-timings{font-size:11px}
 
 .bulk-actions{display:flex;gap:8px;flex-wrap:wrap}.voice-picker .style-details textarea{width:100%;min-height:85px;padding:12px;resize:vertical;font:inherit;border:1px solid var(--line);border-radius:5px;background:var(--paper)}
+
+.pronunciation-settings{margin:16px 0;padding:14px;border:1px solid var(--line);border-radius:8px}.pronunciation-settings summary{cursor:pointer;font-size:13px}.pronunciation-settings textarea,.voice-feedback textarea{display:block;width:100%;padding:10px;border:1px solid var(--line);border-radius:5px;background:var(--paper);font:inherit;resize:vertical;margin:8px 0}.voice-feedback{margin:16px 0}.voice-feedback select{max-width:180px;margin-bottom:12px}.bulk-actions label{display:flex;align-items:center;gap:8px}.bulk-actions select{padding:8px;border:1px solid var(--line);border-radius:5px;background:var(--paper)}

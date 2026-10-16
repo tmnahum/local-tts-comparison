@@ -32,9 +32,14 @@ def initialize():
         CREATE TABLE IF NOT EXISTS voice_selections (id TEXT PRIMARY KEY, model TEXT NOT NULL, voice TEXT NOT NULL, style TEXT NOT NULL, starred INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL);
         ''')
         columns = {r[1] for r in db.execute('PRAGMA table_info(renditions)')}
-        for name, kind in [('chunks', 'TEXT'), ('queued_at', 'TEXT'), ('timing_requested', 'INTEGER NOT NULL DEFAULT 0')]:
+        for name, kind in [('chunks', 'TEXT'), ('queued_at', 'TEXT'), ('timing_requested', 'INTEGER NOT NULL DEFAULT 0'), ('audition', 'INTEGER NOT NULL DEFAULT 0'), ('pronunciations', "TEXT NOT NULL DEFAULT '[]'")]:
             if name not in columns:
                 db.execute(f'ALTER TABLE renditions ADD COLUMN {name} {kind}')
+        db.execute("CREATE TABLE IF NOT EXISTS preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        voice_columns = {r[1] for r in db.execute('PRAGMA table_info(voice_selections)')}
+        for name, kind in [('rating', 'INTEGER NOT NULL DEFAULT 0'), ('notes', "TEXT NOT NULL DEFAULT ''")]:
+            if name not in voice_columns:
+                db.execute(f'ALTER TABLE voice_selections ADD COLUMN {name} {kind}')
         db.execute('UPDATE renditions SET queued_at=created WHERE queued_at IS NULL')
         db.execute("UPDATE renditions SET status='queued' WHERE status IN ('loading','generating')")
 

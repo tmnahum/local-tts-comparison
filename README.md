@@ -125,3 +125,13 @@ Upstream: [Kitten ONNX models](https://github.com/KittenML/KittenTTS/blob/main/d
 The NeuTTS family includes Q4 and Q8 GGUF variants, each with Emily, Paul, Sophie, and Steven. The generation box saves the chosen emotion (neutral, happy, sad, angry, fearful, disgusted, or surprised) with the voice. These fixed-speaker models do not support cloning; NeuTTS Air and Nano are separate cloning models. Word timings can be generated after rendering using the existing English aligner. The bulk button includes each installed variant/speaker once with neutral delivery.
 
 Accept access conditions for `neuphonic/neutts-2e-q4-gguf`, `neuphonic/neutts-2e-q8-gguf`, and `neuphonic/neucodec-onnx-decoder-int8`, then authenticate with `.venv-server/bin/hf auth login` before running setup. Downloads are pinned in `models-manifest.json`. The isolated CPU runtime uses `requirements-neutts.lock`; inference loads local GGUF and ONNX assets offline. Long sections are split into shorter spans to respect NeuTTS's context limit. Model outputs retain the upstream watermark.
+
+### Auditions and comparison tools
+
+Bulk rendering defaults to **First section only**; select **Full article** to render every section. Each voice also has an **Audition first section** button. **Continue full article** creates a full reading that reuses the audition's cached first section. Auditions remain available as separate saved readings.
+
+Switching saved readings or using Listen on another voice seeks to the start of the current sentence when both recordings have word timings. Playback continues if it was playing. Without timings, switching falls back to the corresponding section with an explanatory message.
+
+Personal thumbs-up/down ratings and notes are saved server-side per model, voice, and delivery selection. Pronunciation overrides are global, exact, case-sensitive whole-word/phrase replacements (`original = spoken spelling`). Each new reading snapshots these rules; prior recordings and source article text remain unchanged. Timing metadata is mapped back to source spellings for highlighting and seeking.
+
+Queue estimates use measured synthesis seconds per character from recent cached recordings of the same model; speed is shown as audio duration divided by generation time. Estimates update after completed sections and exclude model loading and alignment. Models without measured samples show an unknown estimate.

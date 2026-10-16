@@ -11,6 +11,7 @@ from itertools import count
 from .catalog import ROOT, MODELS
 from .storage import DATA, database, article
 from .timing import chunk_offsets
+from .pronunciation import source_words
 
 
 def clip_key(model, voice, style, text):
@@ -46,9 +47,10 @@ def rendition_info(row):
                 if (DATA / 'audio' / (clip['key'] + '.wav')).exists():
                     cached[clip['key']] = dict(clip) | {'url': '/api/audio/' + clip['key'] + '.wav'}
     result['clips'] = [cached.get(key) for key in keys]
-    for clip in result['clips']:
+    result['pronunciations'] = json.loads(result.get('pronunciations') or '[]')
+    for chunk, clip in zip(result['chunks'], result['clips']):
         if clip:
-            clip['words'] = word_timings(clip['key'])
+            clip['words'] = source_words(word_timings(clip['key']), chunk.get('pronunciation_edits', []))
             # Only Kokoro timing upgrades regenerate the waveform. Alignment adds
             # metadata to unchanged audio, so keep its URL stable during playback.
             if clip['words'] is not None and result['model'] == 'kokoro':
@@ -61,6 +63,39 @@ def rendition_info(row):
     result['generation_seconds'] = sum(c['generation_seconds'] for c in result['clips'] if c)
     result['peak_vram_gb'] = max([c['peak_vram_gb'] for c in result['clips'] if c] or [0])
     return result
+
+
+_speed_cache = {}
+
+
+def estimate_queue(jobs):
+    """Measured synthesis work, excluding unpredictable model loads/alignment."""
+    known, unknown = 0.0, 0
+    for job in jobs:
+        model = job['model']
+        cached = _speed_cache.get(model)
+        if not cached or time.monotonic() - cached[0] > 30:
+            with database() as db:
+                rows = db.execute('SELECT * FROM renditions WHERE model=? ORDER BY created DESC LIMIT 8', (model,)).fetchall()
+            chars = seconds = audio_seconds = 0
+            seen = set()
+            for row in rows:
+                reading = rendition_info(row)
+                for chunk, clip in zip(reading['chunks'], reading['clips']):
+                    if clip and clip['key'] not in seen and clip['generation_seconds'] > 0:
+                        seen.add(clip['key']); chars += len(chunk['text'])
+                        seconds += clip['generation_seconds']; audio_seconds += clip['duration']
+            cached = (time.monotonic(), seconds / chars if chars else None, audio_seconds / seconds if seconds else None)
+            _speed_cache[model] = cached
+        remaining = sum(len(c['text']) for c, clip in zip(job['chunks'], job['clips']) if not clip)
+        estimate = remaining * cached[1] if cached[1] is not None and not job['timing_requested'] else None
+        job['estimated_seconds'] = estimate
+        job['measured_realtime'] = cached[2]
+        if estimate is None:
+            unknown += 1
+        else:
+            known += estimate
+    return {'estimated_seconds': known if not unknown else None, 'known_seconds': known, 'unknown_jobs': unknown}
 
 
 class Cancelled(Exception):

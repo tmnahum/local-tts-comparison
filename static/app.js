@@ -1,6 +1,6 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
-const state = { models: [], articles: [], article: null, selected: null, chunk: 0, playing: false, waiting: false, source: '', loadToken: 0, importMode: 'url', choices: {}, savedVoices: [], pickerModel: 'kokoro', refresh: false };
+const state = { models: [], articles: [], article: null, selected: null, chunk: 0, playing: false, waiting: false, source: '', loadToken: 0, importMode: 'url', choices: {}, savedVoices: [], pronunciations: [], pickerModel: 'kokoro', refresh: false };
 try { const saved = JSON.parse(localStorage.getItem('readroom:picker') || '{}'); state.pickerModel = saved.model || 'kokoro'; state.choices = saved.choices || {}; } catch {}
 state.highlightMode = ['word', 'sentence', 'none'].includes(localStorage.getItem('readroom:highlight')) ? localStorage.getItem('readroom:highlight') : 'word';
 $('#highlight-mode').value = state.highlightMode;
@@ -33,7 +33,7 @@ function choice(model) {
 }
 function matching(model) {
   const c = choice(model);
-  return state.article?.renditions.find(r => r.model === model.id && r.voice === c.voice && r.style === c.style.trim() && r.grouped);
+  return [...(state.article?.renditions || [])].sort((a,b) => a.audition - b.audition).find(r => JSON.stringify(r.pronunciations || []) === JSON.stringify(state.pronunciations) && r.model === model.id && r.voice === c.voice && r.style === c.style.trim() && r.grouped);
 }
 function playbackChunks() { return selectedReading()?.chunks || state.article?.chunks || []; }
 function selectedReading() { return state.article?.renditions.find(r => r.id === state.selected); }
@@ -57,11 +57,12 @@ async function refreshQueue() {
   const queue = await api('/api/queue');
   const jobs = [...(queue.active ? [queue.active] : []), ...queue.queued];
   $('#queue-count').textContent = jobs.length;
+  $('#queue-feedback').textContent = jobs.length ? (queue.estimated_seconds != null ? `About ${formatTime(queue.estimated_seconds)} of synthesis remaining` : `${formatTime(queue.known_seconds)} estimated work; ${queue.unknown_jobs} jobs still need timing data`) + ' · Estimates update after sections; model loading and alignment are extra.' : '';
   $('#cancel-all').disabled = !jobs.length;
   const markup = jobs.length ? jobs.map((r, index) => {
     const active = r.id === queue.active?.id;
     const model = state.models.find(m => m.id === r.model);
-    return `<div class="queue-job ${active ? 'active' : ''}"><span class="queue-badge">${active ? r.status === 'loading' ? 'LOADING' : 'RENDERING' : `QUEUED ${index + (queue.active ? 0 : 1)}`}</span><div class="queue-job-info"><button class="queue-job-title" data-open-job="${r.article_id}">${escape(r.title)}</button><small>${escape(model?.name || r.model)} · ${escape(voiceName(r))} · ${r.ready}/${r.total} ranges saved</small><div class="card-progress"><div style="width:${r.ready / r.total * 100}%"></div></div></div><button class="button outline small queue-cancel" data-cancel-job="${r.id}">${active ? 'Stop now' : 'Cancel'}</button></div>`;
+    return `<div class="queue-job ${active ? 'active' : ''}"><span class="queue-badge">${active ? r.status === 'loading' ? 'LOADING' : 'RENDERING' : `QUEUED ${index + (queue.active ? 0 : 1)}`}</span><div class="queue-job-info"><button class="queue-job-title" data-open-job="${r.article_id}">${escape(r.title)}</button><small>${escape(model?.name || r.model)} · ${escape(voiceName(r))} · ${r.ready}/${r.total} sections saved${r.audition ? ' · audition' : ''}${r.measured_realtime ? ` · ${r.measured_realtime.toFixed(1)}× real-time` : ''}${r.estimated_seconds != null ? ` · ~${formatTime(r.estimated_seconds)} work left` : ''}</small><div class="card-progress"><div style="width:${r.ready / r.total * 100}%"></div></div></div><button class="button outline small queue-cancel" data-cancel-job="${r.id}">${active ? 'Stop now' : 'Cancel'}</button></div>`;
   }).join('') : '<p class="queue-empty">Nothing rendering. Your GPU can take a breath.</p>';
   if ($('#queue-jobs').innerHTML !== markup) {
     $('#queue-jobs').innerHTML = markup;
@@ -97,7 +98,7 @@ function renderSavedVoices() {
   const markup = state.savedVoices.length ? state.savedVoices.map(s => {
     const selected = s.model === active?.id && s.voice === c.voice && s.style === c.style.trim();
     const label = selectionLabel(s);
-    return `<div class="saved-voice ${selected ? 'active' : ''}"><button class="star-button ${s.starred ? 'starred' : ''}" data-star="${s.id}" aria-label="${s.starred ? 'Unstar' : 'Star'} ${escape(label)}" aria-pressed="${!!s.starred}">${s.starred ? '★' : '☆'}</button><button class="saved-voice-select" data-preset="${s.id}" aria-pressed="${selected}">${escape(label)}</button><button class="remove-voice" data-remove-voice="${s.id}" aria-label="Remove saved voice ${escape(label)}">×</button></div>`;
+    return `<div class="saved-voice ${selected ? 'active' : ''}"><button class="star-button ${s.starred ? 'starred' : ''}" data-star="${s.id}" aria-label="${s.starred ? 'Unstar' : 'Star'} ${escape(label)}" aria-pressed="${!!s.starred}">${s.starred ? '★' : '☆'}</button><button class="saved-voice-select" data-preset="${s.id}" aria-pressed="${selected}">${escape(label)}${s.rating === 1 ? ' 👍' : s.rating === -1 ? ' 👎' : ''}</button><button class="remove-voice" data-remove-voice="${s.id}" aria-label="Remove saved voice ${escape(label)}">×</button></div>`;
   }).join('') : '<p class="field-note">Save a family and voice below to use it on any article. Star your favorites to keep them first.</p>';
   if ($('#voice-selections').innerHTML !== markup) {
     $('#voice-selections').innerHTML = markup;
@@ -152,7 +153,8 @@ function renderCards() {
     <p class="field-note capabilities">${escape(model.capabilities || '')}</p>
     ${model.voice_grade_source ? `<p class="field-note">Grades are the author’s overall estimates of voice training quality and quantity. <a href="${escape(model.voice_grade_source)}" target="_blank" rel="noopener noreferrer">Official voice grades ↗</a></p>` : ''}
     ${model.styles ? `<div class="style-details"><label for="style-${model.id}">${escape(model.style_label || 'Delivery')}</label>${model.style_options || model.emotions ? `<select id="style-${model.id}">${(model.style_options || model.emotions).map(v => `<option value="${escape(v)}" ${v === c.style ? 'selected' : ''}>${escape(v || 'None — natural narration')}</option>`).join('')}</select>` : `<textarea aria-label="Delivery instructions" id="style-${model.id}" maxlength="400" placeholder="e.g. Warm, calm audiobook narration">${escape(c.style)}</textarea>`}<p class="field-note">${escape(model.style_help || '')}</p></div>` : ''}
-    <div class="model-actions"><button class="button primary" id="save-voice">Save voice</button><button class="button listen-button" data-listen="${model.id}">▶ Listen</button><button class="button render-button" data-render="${model.id}">Render article</button></div><button class="button outline small timing-button" data-timings="${model.id}" hidden>Generate word timings</button>
+    <div class="voice-feedback"><label for="voice-rating">Your rating</label><select id="voice-rating"><option value="0">Unrated</option><option value="1">👍 Like</option><option value="-1">👎 Dislike</option></select><label for="voice-notes">Your notes</label><textarea id="voice-notes" maxlength="1000" rows="2" placeholder="What do you like about this voice?"></textarea><button id="save-feedback" class="button outline small">Save rating & notes</button></div>
+    <div class="model-actions"><button class="button primary" id="save-voice">Save voice</button><button class="button listen-button" data-listen="${model.id}">▶ Listen</button><button class="button outline" data-audition="${model.id}">Audition first section</button><button class="button render-button" data-render="${model.id}">Render article</button></div><button class="button outline small timing-button" data-timings="${model.id}" hidden>Generate word timings</button>
     <div class="card-status"><span class="render-status"></span><a class="download" hidden>WAV ↓</a></div><div class="card-progress"><div></div></div><div class="card-metrics"></div><div class="card-error" hidden></div>
   </article>`;
   $('#family-picker').onchange = e => {
@@ -164,13 +166,19 @@ function renderCards() {
     if (next.voices.some(v => v.id === c.voice)) choice(next).voice = c.voice;
     state.pickerModel = next.id; persistPicker(); renderCards();
   };
-  $(`[data-voice]`).onchange = e => { c.voice = e.target.value; persistPicker(); updateCards(); };
-  if (model.styles) $(`#style-${model.id}`).oninput = e => { c.style = e.target.value; persistPicker(); updateCards(); };
+  $(`[data-voice]`).onchange = e => { c.voice = e.target.value; persistPicker(); renderCards(); };
+  if (model.styles) $(`#style-${model.id}`).oninput = e => { c.style = e.target.value; persistPicker(); const saved = state.savedVoices.find(s => s.model === model.id && s.voice === c.voice && s.style === c.style.trim()); $('#voice-rating').value = saved?.rating || 0; $('#voice-notes').value = saved?.notes || ''; updateCards(); };
   $('#save-voice').onclick = async () => {
     $('#save-voice').disabled = true;
     try { await api('/api/voices', { model: model.id, ...c }); await refreshVoices(); updateCards(); toast('Voice saved. Use it on any article, or star it above.'); }
     catch (e) { toast(e.message); $('#save-voice').disabled = false; }
   };
+  const feedback = state.savedVoices.find(s => s.model === model.id && s.voice === c.voice && s.style === c.style.trim());
+  $('#voice-rating').value = feedback?.rating || 0; $('#voice-notes').value = feedback?.notes || '';
+  $('#save-feedback').onclick = async () => {
+    try { await api('/api/voices/feedback', { model: model.id, ...c, rating: Number($('#voice-rating').value), notes: $('#voice-notes').value }); await refreshVoices(); toast('Rating and notes saved with this voice.'); } catch(e) { toast(e.message); }
+  };
+  $('[data-audition]').onclick = () => queueModel(model.id, state.article.id, null, true).then(() => toast('First section queued.')).catch(e => toast(e.message));
   $('[data-listen]').onclick = () => listenModel(model.id).catch(e => toast(e.message));
   $('[data-render]').onclick = () => renderModel(model.id).catch(e => toast(e.message));
   $('[data-timings]').onclick = e => generateTimings(matching(model), e.currentTarget).catch(err => toast(err.message));
@@ -189,8 +197,10 @@ function updateCards() {
     if (r && state.engine?.rendition === r.id && state.engine.phase === 'aligning') label.textContent = 'Mapping words to saved audio…';
     const needsTimings = model.id === 'kokoro' && r?.status === 'complete' && !r.has_word_timings;
     render.textContent = needsTimings ? 'Enable word highlighting' : !r ? 'Render article' : working ? 'Stop rendering' : r.status === 'complete' ? 'Saved ✓' : 'Resume article';
-    render.disabled = !available || (r?.status === 'complete' && !needsTimings);
-    if (model.id !== 'kokoro' && r && r.ready === r.total && !working) {
+    render.disabled = !available || (r?.status === 'complete' && !needsTimings && !r.audition);
+    if (r?.audition && !working) render.textContent = 'Continue full article';
+    card.querySelector('[data-audition]').disabled = !available || !!r?.clips[0];
+    if (model.id !== 'kokoro' && r && !r.audition && r.ready === r.total && !working) {
       render.textContent = 'Audio saved ✓'; render.disabled = true;
     }
     card.querySelector('[data-listen]').disabled = !available;
@@ -210,14 +220,14 @@ function updateCards() {
   }
   const readings = state.article?.renditions || [];
   const saved = $('#saved-readings');
-  const markup = readings.length ? '<span class="saved-label">READINGS</span>' + readings.map(r => `<button class="reading-chip ${r.id === state.selected ? 'active' : ''}" data-reading="${r.id}">${escape(state.models.find(m => m.id === r.model)?.name)} · ${escape(voiceName(r))}${r.grouped ? ' · 3¶' : ' · original'} ${r.status === 'complete' ? '✓' : r.ready + '/' + r.total}</button>`).join('') : '';
+  const markup = readings.length ? '<span class="saved-label">READINGS</span>' + readings.map(r => `<button class="reading-chip ${r.id === state.selected ? 'active' : ''}" data-reading="${r.id}">${escape(state.models.find(m => m.id === r.model)?.name)} · ${escape(voiceName(r))}${r.audition ? ' · audition' : r.grouped ? ' · full' : ' · original'}${r.pronunciations?.length ? ' · pronunciation overrides' : ''} ${r.status === 'complete' ? '✓' : r.ready + '/' + r.total}</button>`).join('') : '';
   if (saved.innerHTML !== markup) {
     saved.innerHTML = markup;
     $$('[data-reading]').forEach(b => b.onclick = () => {
       const r = state.article.renditions.find(x => x.id === b.dataset.reading);
       state.choices[r.model] = { voice: r.voice, style: r.style };
       state.pickerModel = r.model; persistPicker();
-      selectReading(r.id); renderCards(); updatePlayer();
+      const playing = state.playing; selectReading(r.id, !!state.selected); renderCards(); updatePlayer(); if (playing) startPlayback();
     });
   }
 }
@@ -228,7 +238,7 @@ function updateTimingButton(button, reading, modelId = reading?.model) {
   const audioReady = reading && reading.ready === reading.total;
   button.disabled = !audioReady || !!reading?.has_word_timings || !!busy || ['queued', 'loading', 'generating'].includes(reading?.status);
   button.textContent = reading?.has_word_timings ? 'Word timings ready ✓' : busy ? 'Generating word timings…' : 'Generate word timings';
-  button.title = !audioReady ? 'Render the full article first.' : 'Map words to this saved recording for highlighting and click-to-seek.';
+  button.title = !audioReady ? 'Finish rendering this reading first.' : 'Map words to this saved recording for highlighting and click-to-seek.';
 }
 async function generateTimings(reading, button) {
   if (!reading) return;
@@ -308,19 +318,38 @@ async function refreshArticle() {
 }
 function selectReading(id, samePosition = false) {
   const oldParagraph = playbackChunks()[state.chunk]?.paragraph || 0;
+  const old = selectedReading();
+  const oldTime = state.source ? audio.currentTime : state.resumeTime || 0;
+  const oldWords = old?.clips[state.chunk]?.words || [];
+  const activeWord = [...oldWords].reverse().find(w => w.start_time <= oldTime) || oldWords[0];
+  const globalOffset = activeWord && (old.chunk_offsets?.[state.chunk] ?? 0) + activeWord.start;
+  const sentence = globalOffset != null && document.querySelector(`[data-word-start="${globalOffset}"]`)?.closest('.article-sentence');
+  const sentenceWords = sentence ? [...sentence.querySelectorAll('[data-word-start]')].map(el => Number(el.dataset.wordStart)) : [];
+
   stopPlayback(); state.selected = id;
   let stored = {};
   try { stored = JSON.parse(localStorage.getItem(`position:${id}`) || '{}'); } catch {}
   state.chunk = samePosition ? Math.max(0, playbackChunks().findIndex(c => c.paragraph <= oldParagraph && (c.paragraph_last ?? c.paragraph) >= oldParagraph)) : Math.min(stored.chunk || 0, playbackChunks().length - 1);
   state.resumeTime = samePosition ? 0 : stored.time || 0;
+  if (samePosition && sentenceWords.length) {
+    const reading = selectedReading();
+    let target = null;
+    for (let chunk = 0; chunk < reading.clips.length && !target; chunk++) {
+      const offset = reading.chunk_offsets?.[chunk];
+      const word = reading.clips[chunk]?.words?.find(w => sentenceWords.includes(offset + w.start));
+      if (word) target = { chunk, time: word.start_time };
+    }
+    if (target) { state.chunk = target.chunk; state.resumeTime = target.time; }
+    else toast('Sentence timing is unavailable in this voice. Starting at the saved section.');
+  } else if (samePosition) toast('Generate word timings for both voices to switch at the same sentence. Starting at the saved section.');
   $('#seek').value = 0;
   $('#time-label').textContent = `${formatTime(state.resumeTime)} / ${formatTime(selectedReading()?.clips[state.chunk]?.duration)}`;
   $('#player').hidden = false; updateCards(); updatePlayer();
 }
-async function queueModel(id, articleId = state.article.id, savedChoice = null) {
+async function queueModel(id, articleId = state.article.id, savedChoice = null, audition = false) {
   const model = state.models.find(m => m.id === id);
   if (!savedChoice && model.styles && $(`#style-${id}`)) choice(model).style = $(`#style-${id}`).value;
-  const result = await api(`/api/articles/${articleId}/renditions`, { model: id, ...(savedChoice || choice(model)) });
+  const result = await api(`/api/articles/${articleId}/renditions`, { model: id, ...(savedChoice || choice(model)), audition });
   await Promise.all([refreshArticle(), refreshQueue()]);
   return result.id;
 }
@@ -338,7 +367,8 @@ async function listenModel(id) {
   // Unlock this media element during the click, before waiting for generation.
   unlockAudio();
   const articleId = state.article.id;
-  const rid = await queueModel(id);
+  const existing = matching(state.models.find(m => m.id === id));
+  const rid = existing?.clips[0] ? existing.id : await queueModel(id, articleId, null, true);
   if (articleId !== state.article.id) return;
   if (rid !== state.selected) selectReading(rid, !!state.selected);
   startPlayback();
@@ -383,7 +413,7 @@ function updatePlayer() {
   const model = state.models.find(m => m.id === r.model);
   $('#player').hidden = false;
   $('#player-voice').textContent = `${model.name} · ${voiceName(r)}`;
-  $('#player-state').textContent = state.playing ? state.waiting ? 'Waiting for the next saved chunk…' : 'Reading from your saved audio' : r.status === 'complete' ? 'Full reading saved locally' : `${r.ready}/${r.total} chunks saved · ${r.status}`;
+  $('#player-state').textContent = state.playing ? state.waiting ? 'Waiting for the next saved chunk…' : 'Reading from your saved audio' : r.status === 'complete' ? (r.audition ? 'First section saved · Continue full article to hear more' : 'Full reading saved locally') : `${r.ready}/${r.total} chunks saved · ${r.status}`;
   $('#play-toggle').textContent = state.playing ? 'Ⅱ' : '▶'; $('#play-toggle').setAttribute('aria-label', state.playing ? 'Pause' : 'Play');
   const chunk = playbackChunks()[state.chunk];
   const p = chunk?.paragraph || 0;
@@ -424,25 +454,39 @@ $('#render-combinations').onclick = async () => {
   if (state.bulkRendering || !state.article) return;
   state.bulkRendering = true;
   const articleId = state.article.id;
+  const audition = $('#render-scope').value === 'audition';
   const combinations = state.models.filter(m => m.downloaded && m.installed).flatMap(m => m.voices.map(v => ({ model: m.id, voice: v.id, style: '' })));
   renderSavedVoices();
   let queued = 0;
   const failures = [];
   try {
     for (const combination of combinations) {
-      try { await api(`/api/articles/${articleId}/renditions`, combination); queued++; }
+      try { await api(`/api/articles/${articleId}/renditions`, { ...combination, audition }); queued++; }
       catch (e) { failures.push(e.message); }
     }
     await Promise.all([refreshArticle(), refreshQueue()]);
-    toast(`${queued} combinations queued or already saved, using default delivery.${failures.length ? ` ${failures.length} failed: ${failures[0]}` : ''}`);
+    toast(`${queued} ${audition ? 'first-section auditions' : 'full readings'} queued or already saved, using default delivery.${failures.length ? ` ${failures.length} failed: ${failures[0]}` : ''}`);
   } finally { state.bulkRendering = false; renderSavedVoices(); }
 };
 $('#render-all').onclick = async () => {
   $('#render-all').disabled = true;
   const articleId = state.article.id;
-  try { for (const s of [...state.savedVoices]) { if (state.models.some(m => m.id === s.model && m.downloaded && m.installed)) await queueModel(s.model, articleId, { voice: s.voice, style: s.style }); } toast('Saved voices queued for this article.'); }
+  const audition = $('#render-scope').value === 'audition';
+  try { for (const s of [...state.savedVoices]) { if (state.models.some(m => m.id === s.model && m.downloaded && m.installed)) await queueModel(s.model, articleId, { voice: s.voice, style: s.style }, audition); } toast('Saved voices queued for this article.'); }
   catch (e) { toast(e.message); }
   finally { $('#render-all').disabled = false; }
+};
+
+$('#save-pronunciations').onclick = async () => {
+  try {
+    const rules = $('#pronunciation-rules').value.split('\n').filter(s => s.trim()).map(line => {
+      const at = line.indexOf('=');
+      if (at < 1 || !line.slice(at + 1).trim()) throw new Error('Use original = spoken spelling on each line.');
+      return { word: line.slice(0, at).trim(), replacement: line.slice(at + 1).trim() };
+    });
+    state.pronunciations = await api('/api/pronunciations', { rules }); updateCards();
+    toast('Pronunciations saved. New renders use these spellings; existing audio is kept.');
+  } catch(e) { toast(e.message); }
 };
 
 function openImport() { $('#import-error').hidden = true; $('#import-dialog').showModal(); }
@@ -489,6 +533,8 @@ async function init() {
   try {
     const status = await api('/api/status'); state.models = status.models; state.engine = status.engine;
     await Promise.all([refreshLibrary(), refreshVoices()]);
+    state.pronunciations = await api('/api/pronunciations');
+    $('#pronunciation-rules').value = state.pronunciations.map(r => `${r.word} = ${r.replacement}`).join('\n');
     const last = localStorage.getItem('readroom:article');
     if (state.articles.length) await openArticle(state.articles.find(a => a.id === last)?.id || state.articles[0].id);
     await poll();

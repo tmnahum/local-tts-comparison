@@ -194,7 +194,7 @@ def test_queue_visible_across_articles_and_cancellable(client):
     assert client.post('/api/renditions/' + ids[0] + '/cancel').json()['cancelled']
     assert [r['id'] for r in client.get('/api/queue').json()['queued']] == [ids[1]]
     assert client.post('/api/queue/cancel').json()['cancelled'] == 1
-    assert client.get('/api/queue').json() == {'active': None, 'queued': []}
+    assert client.get('/api/queue').json() == {'active': None, 'queued': [], 'estimated_seconds': 0, 'known_seconds': 0, 'unknown_jobs': 0}
 
 
 def test_active_process_is_killed_and_immediate_retry_survives(client):
@@ -514,3 +514,68 @@ def test_all_english_kokoro_voices_are_selectable(client):
         result = client.post('/api/voices', json={'model': 'kokoro', 'voice': voice['id']})
         assert result.status_code == 200
         assert result.json()['voice'] == voice['id']
+
+
+def test_audition_continuation_reuses_first_clip(client):
+    from app.engine import rendition_info
+    doc = client.post('/api/articles', json={'title': 'Audition continuity', 'text': '\n\n'.join(f'Audition paragraph {i}.' for i in range(7))}).json()
+    preview = client.post(f"/api/articles/{doc['id']}/renditions", json={'model': 'pocket', 'audition': True}).json()['id']
+    with database() as db:
+        reading = rendition_info(db.execute('SELECT * FROM renditions WHERE id=?', (preview,)).fetchone())
+    assert reading['audition'] and reading['total'] == 1
+    key = clip_key('pocket', 'alba', '', reading['chunks'][0]['text'])
+    (DATA / 'audio' / (key + '.wav')).write_bytes(b'preview audio')
+    with database() as db:
+        db.execute('INSERT OR REPLACE INTO clips VALUES (?,?,?,?,?)', (key, 8, 2, 0, 24000))
+    full = client.post(f"/api/articles/{doc['id']}/renditions", json={'model': 'pocket'}).json()['id']
+    assert full != preview
+    with database() as db:
+        reading = rendition_info(db.execute('SELECT * FROM renditions WHERE id=?', (full,)).fetchone())
+    assert reading['total'] == 3 and reading['ready'] == 1
+    assert reading['clips'][0]['key'] == key
+    assert not reading['audition']
+
+
+def test_pronunciation_snapshots_and_word_mapping(client):
+    from app.pronunciation import apply_rules, source_words
+    rules = [{'word': 'API', 'replacement': 'A P I'}, {'word': 'Readroom', 'replacement': 'Reed room'}]
+    original = 'API and Readroom; not APIs.'
+    spoken, edits = apply_rules(original, rules)
+    assert spoken == 'A P I and Reed room; not APIs.'
+    import re
+    words = [dict(start=m.start(), end=m.end(), start_time=i, end_time=i+1) for i,m in enumerate(re.finditer(r'\S+', spoken))]
+    mapped = source_words(words, edits)
+    assert original[mapped[0]['start']:mapped[0]['end']] == 'API'
+    assert mapped[0]['end_time'] == 3
+    assert original[mapped[-1]['start']:mapped[-1]['end']] == 'APIs.'
+    assert client.post('/api/pronunciations', json={'rules': rules}).status_code == 200
+    doc = client.post('/api/articles', json={'title':'Pronunciation snapshot', 'text': original}).json()
+    first = client.post(f"/api/articles/{doc['id']}/renditions", json={'model':'kokoro'}).json()['id']
+    assert client.post('/api/pronunciations', json={'rules': []}).status_code == 200
+    second = client.post(f"/api/articles/{doc['id']}/renditions", json={'model':'kokoro'}).json()['id']
+    assert first != second
+    readings = client.get(f"/api/articles/{doc['id']}").json()['renditions']
+    old = next(r for r in readings if r['id'] == first)
+    assert old['chunks'][0]['text'] == spoken and old['chunks'][0]['source_text'] == original
+    assert old['pronunciations'] == rules and old['chunk_offsets'] == [0]
+    assert client.post('/api/pronunciations', json={'rules': rules * 2}).status_code == 422
+
+
+def test_feedback_persists_without_changing_saved_voice_identity(client):
+    original = client.post('/api/voices', json={'model':'kokoro','voice':'af_heart'}).json()
+    result = client.post('/api/voices/feedback', json={'model':'kokoro','voice':'af_heart','rating':1,'notes':'Clear and relaxed.'})
+    assert result.status_code == 200 and result.json()['id'] == original['id']
+    saved = next(v for v in client.get('/api/voices').json() if v['id'] == original['id'])
+    assert saved['rating'] == 1 and saved['notes'] == 'Clear and relaxed.'
+    assert client.post('/api/voices/feedback', json={'model':'kokoro','rating':2}).status_code == 422
+
+
+def test_queue_estimates_measured_work_and_unknown_models():
+    import time
+    from app.engine import estimate_queue, _speed_cache
+    _speed_cache['test'] = (time.monotonic(), .5, 2)
+    jobs = [{'model':'test','chunks':[{'text':'1234'},{'text':'123456'}], 'clips':[{'duration':2},None], 'timing_requested':0}]
+    result = estimate_queue(jobs)
+    assert result['estimated_seconds'] == 3 and jobs[0]['measured_realtime'] == 2
+    jobs[0]['timing_requested'] = 1
+    assert estimate_queue(jobs)['estimated_seconds'] is None

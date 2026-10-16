@@ -38,8 +38,8 @@ def chunk_offsets(paragraphs, chunks):
     cursor = 0
     result = []
     for chunk in chunks:
-        start = source.find(chunk['text'], cursor)
+        start = source.find(chunk.get('source_text', chunk['text']), cursor)
         result.append(start if start >= 0 else None)
         if start >= 0:
-            cursor = start + len(chunk['text'])
+            cursor = start + len(chunk.get('source_text', chunk['text']))
     return result
