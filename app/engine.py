@@ -9,11 +9,17 @@ import time
 
 from .catalog import ROOT, MODELS
 from .storage import DATA, database, article
+from .timing import chunk_offsets
 
 
 def clip_key(model, voice, style, text):
     revision = (ROOT / 'models' / model / '.ready.json').read_text() if (ROOT / 'models' / model / '.ready.json').exists() else ''
     return hashlib.sha256(json.dumps([2, model, voice, style, text, revision], ensure_ascii=False).encode()).hexdigest()
+
+
+def word_timings(key):
+    path = DATA / 'audio' / (key + '.words.json')
+    return json.loads(path.read_text()) if path.exists() else None
 
 
 def clip_info(key):
@@ -39,6 +45,13 @@ def rendition_info(row):
                 if (DATA / 'audio' / (clip['key'] + '.wav')).exists():
                     cached[clip['key']] = dict(clip) | {'url': '/api/audio/' + clip['key'] + '.wav'}
     result['clips'] = [cached.get(key) for key in keys]
+    for clip in result['clips']:
+        if clip:
+            clip['words'] = word_timings(clip['key'])
+            if clip['words'] is not None:
+                clip['url'] += '?timing=1'
+    result['chunk_offsets'] = chunk_offsets(doc['paragraphs'], result['chunks'])
+    result['has_word_timings'] = bool(result['clips']) and all(c and c['words'] is not None for c in result['clips'])
     result['ready'] = sum(c is not None for c in result['clips'])
     result['total'] = len(result['clips'])
     result['audio_seconds'] = sum(c['duration'] for c in result['clips'] if c)
@@ -182,7 +195,7 @@ class Engine:
                 for chunk in chunks:
                     self.check(ticket)
                     key = clip_key(row['model'], row['voice'], row['style'], chunk['text'])
-                    if clip_info(key):
+                    if clip_info(key) and (row['model'] != 'kokoro' or word_timings(key) is not None):
                         continue
                     with self.lock, database() as db:
                         self.check(ticket)
@@ -201,6 +214,11 @@ class Engine:
                         if not result.get('ok'):
                             raise RuntimeError(result.get('error', 'Audio generation failed.'))
                         output.replace(DATA / 'audio' / (key + '.wav'))
+                        if result.get('words') is not None:
+                            metadata = DATA / 'audio' / (key + '.words.partial.json')
+                            metadata.write_text(json.dumps(result['words']))
+                            metadata.replace(DATA / 'audio' / (key + '.words.json'))
+                        (DATA / 'audio' / (rid + '-full.wav')).unlink(missing_ok=True)
                         db.execute('INSERT OR REPLACE INTO clips VALUES (?,?,?,?,?)', (key, result['duration'], result['generation_seconds'], result['peak_vram_gb'], result['sample_rate']))
                 with self.lock, database() as db:
                     self.check(ticket)

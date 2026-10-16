@@ -149,8 +149,8 @@ def create_rendition(article_id: str, body: RenditionInput):
     rid = hashlib.sha256(json.dumps([article_id, body.model, voice, style, 'three-paragraphs-v1']).encode()).hexdigest()[:24]
     with engine.lock, database() as db:
         db.execute('BEGIN IMMEDIATE')
-        existing = db.execute('SELECT status FROM renditions WHERE id=?', (rid,)).fetchone()
-        enqueue = not existing or existing[0] in ('error', 'paused')
+        existing = db.execute('SELECT * FROM renditions WHERE id=?', (rid,)).fetchone()
+        enqueue = not existing or existing['status'] in ('error', 'paused') or (existing['status'] == 'complete' and body.model == 'kokoro' and not rendition_info(existing)['has_word_timings'])
         if not existing:
             now = datetime.now(timezone.utc).isoformat()
             db.execute('INSERT INTO renditions (id,article_id,model,voice,style,status,error,created,chunks,queued_at) VALUES (?,?,?,?,?,?,?,?,?,?)', (rid, article_id, body.model, voice, style, 'queued', None, now, json.dumps(chunk_paragraphs(doc['paragraphs'])), now))

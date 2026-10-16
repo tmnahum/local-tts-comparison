@@ -259,3 +259,60 @@ def test_grouped_download_has_no_inserted_silence(client):
     assert response.status_code == 200
     with wave.open(io.BytesIO(response.content)) as wav:
         assert wav.getnframes() == 4800
+
+
+def test_kokoro_timings_merge_contractions_and_offset_internal_audio():
+    from types import SimpleNamespace as Obj
+    from app.timing import kokoro_words
+    def token(text, start, end):
+        return Obj(text=text, start_ts=start, end_ts=end)
+    outputs = [Obj(audio=[0] * 24000, tokens=[token('Don', .1, .2), token("'t", .2, .3), token('go', .4, .6), token('.', None, None)]),
+               Obj(audio=[0] * 24000, tokens=[token('Go', .1, .4), token('now', .5, .8), token('.', None, None)])]
+    words = kokoro_words("Don't go. Go now.", outputs)
+    assert [(w['start'], w['end']) for w in words] == [(0, 5), (6, 9), (10, 12), (13, 17)]
+    assert words[0]['start_time'] == .1 and words[0]['end_time'] == .3
+    assert words[2]['start_time'] == 1.1
+    assert words[-1]['end_time'] == 1.8
+
+
+def test_word_offsets_handle_repeated_text_and_unicode():
+    from app.timing import chunk_offsets
+    paragraphs = ['Hello 🪴 world.', 'Hello 🪴 world.', 'Third.']
+    chunks = [{'text': p} for p in paragraphs]
+    assert chunk_offsets(paragraphs, chunks) == [0, 15, 30]
+    assert chunk_offsets(paragraphs, [{'text': 'Missing text.'}]) == [None]
+
+
+def test_kokoro_timings_skip_unmapped_tokens_and_invalid_times():
+    from types import SimpleNamespace as Obj
+    from app.timing import kokoro_words
+    output = Obj(audio=[0] * 24000, tokens=[Obj(text='unmatched', start_ts=0, end_ts=.1), Obj(text='Hello', start_ts=float('nan'), end_ts=.3), Obj(text='world', start_ts=.4, end_ts=20)])
+    assert kokoro_words('Hello world', [output]) == [{'start':6, 'end':11, 'start_time':.4, 'end_time':1.0}]
+
+
+def test_existing_kokoro_reading_can_upgrade_word_timings(client, monkeypatch):
+    from app.engine import clip_key
+    doc = client.post('/api/articles', json={'title':'Timing upgrade', 'text':'Hello again.'}).json()
+    rid = client.post(f"/api/articles/{doc['id']}/renditions", json={'model':'kokoro'}).json()['id']
+    key = clip_key('kokoro', 'af_heart', '', 'Hello again.')
+    with wave.open(str(DATA / 'audio' / (key + '.wav')), 'wb') as wav:
+        wav.setparams((1, 2, 24000, 0, 'NONE', 'not compressed'))
+        wav.writeframes(b'\0' * 4800)
+    with database() as db:
+        db.execute('INSERT INTO clips VALUES (?,?,?,?,?)', (key, .1, .01, .5, 24000))
+        db.execute("UPDATE renditions SET status='complete' WHERE id=?", (rid,))
+    queued = []
+    monkeypatch.setattr(engine, 'enqueue', queued.append)
+    client.post(f"/api/articles/{doc['id']}/renditions", json={'model':'kokoro'})
+    assert queued == [rid]
+    words = [{'start':0, 'end':5, 'start_time':0, 'end_time':.1}]
+    (DATA / 'audio' / (key + '.words.json')).write_text(json.dumps(words))
+    with database() as db:
+        db.execute("UPDATE renditions SET status='complete' WHERE id=?", (rid,))
+    reading = client.get(f"/api/articles/{doc['id']}").json()['renditions'][0]
+    assert reading['has_word_timings']
+    assert reading['clips'][0]['words'] == words
+    assert reading['clips'][0]['url'].endswith('?timing=1')
+    assert reading['chunk_offsets'] == [0]
+    client.post(f"/api/articles/{doc['id']}/renditions", json={'model':'kokoro'})
+    assert queued == [rid]  # Timed audio is reused.

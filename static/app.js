@@ -97,8 +97,9 @@ function updateCards() {
     const working = r && ['queued', 'loading', 'generating'].includes(r.status);
     label.classList.toggle('busy', !!working);
     label.textContent = !available ? 'Model not installed' : !r ? 'Ready to read' : ({ queued: 'Queued · waiting for GPU', loading: 'Loading voice into memory…', generating: `${r.ready}/${r.total} chunks saved`, complete: `✓ Full reading saved · ${formatTime(r.audio_seconds)}`, paused: `Stopped · ${r.ready}/${r.total} saved`, error: 'Needs a retry' }[r.status]);
-    render.textContent = !r ? 'Render article' : working ? 'Stop rendering' : r.status === 'complete' ? 'Saved ✓' : 'Resume article';
-    render.disabled = !available || r?.status === 'complete';
+    const needsTimings = model.id === 'kokoro' && r?.status === 'complete' && !r.has_word_timings;
+    render.textContent = needsTimings ? 'Enable word highlighting' : !r ? 'Render article' : working ? 'Stop rendering' : r.status === 'complete' ? 'Saved ✓' : 'Resume article';
+    render.disabled = !available || (r?.status === 'complete' && !needsTimings);
     card.querySelector('[data-listen]').disabled = !available;
     card.querySelector('.card-progress div').style.width = `${r ? r.ready / r.total * 100 : 0}%`;
     card.querySelector('.card-metrics').textContent = r?.ready ? `${r.generation_seconds ? (r.audio_seconds / r.generation_seconds).toFixed(1) + '× real-time' : ''} · ${r.peak_vram_gb.toFixed(1)} GB peak VRAM` : model.license + ' · English';
@@ -133,7 +134,16 @@ async function openArticle(id) {
   $('#article-meta').textContent = `${doc.byline ? doc.byline + ' · ' : ''}${words.toLocaleString()} words · ${minutes(words)} min read · ${doc.paragraphs.length} paragraphs`;
   $('#source-link').hidden = !doc.url; $('#source-link').href = doc.url || '#';
   $('#save-text').href = `/api/articles/${doc.id}/text`;
-  $('#article-body').innerHTML = doc.paragraphs.map((p, i) => `<p class="article-paragraph" data-paragraph="${i}" tabindex="0" title="Listen from this paragraph">${escape(p)}</p>`).join('');
+  let sourceOffset = 0;
+  $('#article-body').innerHTML = doc.paragraphs.map((p, i) => {
+    const content = p.replace(/\S+|\s+/gu, (word, index) => {
+      if (/^\s/u.test(word)) return word;
+      const start = sourceOffset + Array.from(p.slice(0, index)).length;
+      return `<span class="article-word" data-word-start="${start}">${escape(word)}</span>`;
+    });
+    sourceOffset += Array.from(p).length + 1;
+    return `<p class="article-paragraph" data-paragraph="${i}" tabindex="0" title="Listen from this paragraph">${content}</p>`;
+  }).join('');
   $$('[data-paragraph]').forEach(p => {
     const seek = () => {
       if (!state.selected) return toast('Choose a narrator with Listen first.');
@@ -242,6 +252,7 @@ function updatePlayer() {
   $('#chunk-label').textContent = `${range} of ${state.article.paragraphs.length}`;
   $('#reading-progress').textContent = `${model.name} · ${range.toLowerCase()} of ${state.article.paragraphs.length}`;
   $$('[data-paragraph]').forEach(el => el.classList.toggle('active', Number(el.dataset.paragraph) >= p && Number(el.dataset.paragraph) <= last));
+  updateWordHighlight();
   $('#previous').disabled = state.chunk === 0; $('#next').disabled = state.chunk === playbackChunks().length - 1;
 }
 audio.onended = () => {
@@ -328,3 +339,35 @@ async function init() {
 }
 window.addEventListener('beforeunload', savePosition);
 init();
+
+// Read the media clock every frame: follows seeking and playback-rate changes.
+let highlightedWord = null;
+function updateWordHighlight() {
+  const reading = selectedReading();
+  const clip = reading?.clips[state.chunk];
+  const words = clip?.words;
+  const offset = reading?.chunk_offsets?.[state.chunk];
+  let target = null;
+  if (state.source === clip?.url && !state.waiting && words?.length && offset != null) {
+    const time = audio.currentTime;
+    let low = 0, high = words.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (words[mid].start_time <= time) low = mid + 1; else high = mid;
+    }
+    const word = words[low - 1];
+    if (word && time < word.end_time) target = document.querySelector(`[data-word-start="${offset + word.start}"]`);
+  }
+  if (target !== highlightedWord) {
+    highlightedWord?.classList.remove('spoken-word');
+    target?.classList.add('spoken-word');
+    highlightedWord = target;
+  }
+}
+function animateWordHighlight() {
+  updateWordHighlight();
+  requestAnimationFrame(animateWordHighlight);
+}
+// Media events also update while a browser throttles background animation frames.
+for (const event of ['timeupdate', 'seeked', 'loadedmetadata', 'pause', 'ended']) audio.addEventListener(event, updateWordHighlight);
+requestAnimationFrame(animateWordHighlight);

@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from app.text import split_paragraphs
+from app.timing import kokoro_words
 protocol = sys.stdout
 sys.stdout = sys.stderr
 os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
@@ -55,12 +56,14 @@ def main():
             torch.manual_seed(42)
             if device == 'cuda':
                 torch.cuda.reset_peak_memory_stats()
+            words = None
             with torch.inference_mode():
                 if kind == 'kokoro':
                     voice = str(path / 'voices' / (request['voice'] + '.pt'))
                     outputs = list(pipelines[request['voice'][0]](request['text'], voice=voice, speed=1))
                     samples = np.concatenate([o.audio.detach().cpu().numpy() for o in outputs])
                     sr = 24000
+                    words = kokoro_words(request['text'], outputs, sr)
                 elif kind in ('qwen', 'qwen-small'):
                     audio, sr = model.generate_custom_voice(text=request['text'], language='English', speaker=request['voice'], instruct=(request.get('style') or 'Read naturally and clearly, with calm pacing. Read the text exactly.') if kind == 'qwen' else None, max_new_tokens=2048)
                     samples = audio[0]
@@ -77,7 +80,7 @@ def main():
             if peak > 1:
                 samples = samples * (0.98 / peak)
             sf.write(request['output'], samples, sr, subtype='PCM_16')
-            send({'ok': True, 'duration': len(samples) / sr, 'generation_seconds': time.monotonic() - started, 'peak_vram_gb': torch.cuda.max_memory_allocated() / 1024**3 if device == 'cuda' else 0, 'sample_rate': sr})
+            send({'ok': True, 'duration': len(samples) / sr, 'generation_seconds': time.monotonic() - started, 'peak_vram_gb': torch.cuda.max_memory_allocated() / 1024**3 if device == 'cuda' else 0, 'sample_rate': sr, 'words': words})
         except Exception as exc:
             import traceback
             traceback.print_exc()

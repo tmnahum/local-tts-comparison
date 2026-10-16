@@ -92,3 +92,15 @@ Tests cover paragraph-preserving chunking, input validation, URL/private-network
 - [Trafilatura](https://github.com/adbar/trafilatura)
 
 Bundled fonts are DM Sans and Libre Caslon Text, under the SIL Open Font License; licenses are in `static/fonts/`.
+
+## Word timing and targeted audio effects
+
+Kokoro English exposes token start/end timestamps derived from predicted phoneme durations. Readroom saves these alongside each clip in `.words.json`, merges token pieces into displayed words, and maps chunk-relative offsets back to the original article. The player highlights the current word using the audio clock, including when seeking or changing speed. Three-paragraph synthesis stays continuous. Unmatched tokens are skipped rather than assigned guessed positions.
+
+Existing Kokoro audio predates this metadata. **Enable word highlighting** or **Listen** queues regeneration of ranges missing timings; already timed ranges are reused. Other models retain paragraph highlighting. Timestamps are approximate acoustic boundaries, not perfect separation of neighboring sounds.
+
+Research checked 2026-10-16: the official Qwen3-TTS 0.6B/1.7B synthesis interfaces return waveforms and sample rate, not word timings; Chatterbox Turbo returns a waveform without a supported word-timestamp output. This does not mean alignment is impossible. [Qwen3-ForcedAligner-0.6B](https://github.com/QwenLM/Qwen3-ASR#forcedaligner-usage) is a separate local model that takes existing audio plus its text and returns word/character timestamps, including English. It is a candidate for Qwen and Chatterbox alignment; it is not installed or benchmarked here.
+
+Future link effects should preserve link destinations and exact text spans during article extraction, then map those spans to word timings. Keep narration continuous and fade effects across selected intervals; let effect tails decay over subsequent audio. Test contractions, numbers, repeated words, and timing at phrase boundaries before relying on these timestamps for precise audio edits. Effect selection remains open.
+
+Upstream timing references: [Kokoro pipeline](https://github.com/hexgrad/kokoro/blob/main/kokoro/pipeline.py), [Qwen TTS interface](https://github.com/QwenLM/Qwen3-TTS/blob/main/qwen_tts/inference/qwen3_tts_model.py), [Chatterbox Turbo interface](https://github.com/resemble-ai/chatterbox/blob/master/src/chatterbox/tts_turbo.py).
