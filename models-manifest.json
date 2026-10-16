@@ -38,5 +38,21 @@
   "aligner": {
     "repo": "facebook/wav2vec2-base-960h",
     "revision": "22aad52d435eb6dbaf354bdad9b0da84ce7d6156"
+  },
+  "supertonic": {
+    "repo": "Supertone/supertonic-3",
+    "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323"
+  },
+  "neutts-q4": {
+    "repo": "neuphonic/neutts-2e-q4-gguf",
+    "revision": "021bd72d8eeff6f548e5c9209d03db6b6dff4939"
+  },
+  "neutts-q8": {
+    "repo": "neuphonic/neutts-2e-q8-gguf",
+    "revision": "71a4f95d22fb73b583975613e92cfefa70b036e0"
+  },
+  "neutts-codec": {
+    "repo": "neuphonic/neucodec-onnx-decoder-int8",
+    "revision": "d4b449d34211ffe3b5efc57fa464b37393f8ce7f"
   }
 }

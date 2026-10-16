@@ -29,7 +29,7 @@ function toast(message) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 6000);
 }
 function choice(model) {
-  return state.choices[model.id] ||= { voice: model.default_voice, style: '' };
+  return state.choices[model.id] ||= { voice: model.default_voice, style: model.emotions?.includes('neutral') ? 'neutral' : '' };
 }
 function matching(model) {
   const c = choice(model);
@@ -124,7 +124,10 @@ function renderSavedVoices() {
       } catch (e) { toast(e.message); b.disabled = false; }
     });
   }
-  $('#render-all').disabled = !state.savedVoices.some(s => state.models.some(m => m.id === s.model && m.downloaded && m.installed));
+  const count = state.models.filter(m => m.downloaded && m.installed).reduce((n, m) => n + m.voices.length, 0);
+  $('#render-combinations').disabled = Boolean(state.bulkRendering) || !count || !state.article;
+  $('#render-combinations').textContent = state.bulkRendering ? 'Queuing combinations…' : `Render every combination (${count})`;
+  $('#render-all').disabled = Boolean(state.bulkRendering) || !state.savedVoices.some(s => state.models.some(m => m.id === s.model && m.downloaded && m.installed));
 }
 async function refreshVoices() {
   state.savedVoices = await api('/api/voices');
@@ -146,7 +149,8 @@ function renderCards() {
       <div><label for="voice-${model.id}">Voice</label><select id="voice-${model.id}" data-voice="${model.id}">${model.voices.map(v => `<option value="${v.id}" ${v.id === c.voice ? 'selected' : ''}>${escape(v.name)}</option>`).join('')}</select></div>
     </div>
     <p class="description">${escape(model.description)} <span class="model-size">${escape(model.size)}</span></p>
-    ${model.styles ? `<div class="style-details"><label for="style-${model.id}">Delivery</label>${model.emotions ? `<select id="style-${model.id}">${model.emotions.map(v => `<option ${v === c.style ? 'selected' : ''}>${v}</option>`).join('')}</select>` : `<input aria-label="Delivery instructions" id="style-${model.id}" maxlength="400" value="${escape(c.style)}" placeholder="e.g. Warm, calm audiobook narration">`}</div>` : ''}
+    <p class="field-note capabilities">${escape(model.capabilities || '')}</p>
+    ${model.styles ? `<div class="style-details"><label for="style-${model.id}">${escape(model.style_label || 'Delivery')}</label>${model.style_options || model.emotions ? `<select id="style-${model.id}">${(model.style_options || model.emotions).map(v => `<option value="${escape(v)}" ${v === c.style ? 'selected' : ''}>${escape(v || 'None — natural narration')}</option>`).join('')}</select>` : `<textarea aria-label="Delivery instructions" id="style-${model.id}" maxlength="400" placeholder="e.g. Warm, calm audiobook narration">${escape(c.style)}</textarea>`}<p class="field-note">${escape(model.style_help || '')}</p></div>` : ''}
     <div class="model-actions"><button class="button primary" id="save-voice">Save voice</button><button class="button listen-button" data-listen="${model.id}">▶ Listen</button><button class="button render-button" data-render="${model.id}">Render article</button></div><button class="button outline small timing-button" data-timings="${model.id}" hidden>Generate word timings</button>
     <div class="card-status"><span class="render-status"></span><a class="download" hidden>WAV ↓</a></div><div class="card-progress"><div></div></div><div class="card-metrics"></div><div class="card-error" hidden></div>
   </article>`;
@@ -415,6 +419,23 @@ $('#previous').onclick = () => { if (state.chunk > 0) { state.chunk--; state.res
 $('#next').onclick = () => { if (state.chunk < playbackChunks().length - 1) { state.chunk++; state.resumeTime = 0; startPlayback(); } };
 $('#seek').oninput = e => { if (Number.isFinite(audio.duration)) audio.currentTime = Number(e.target.value) / 100 * audio.duration; };
 $('#speed').onchange = () => { audio.playbackRate = Number($('#speed').value); };
+$('#render-combinations').onclick = async () => {
+  if (state.bulkRendering || !state.article) return;
+  state.bulkRendering = true;
+  const articleId = state.article.id;
+  const combinations = state.models.filter(m => m.downloaded && m.installed).flatMap(m => m.voices.map(v => ({ model: m.id, voice: v.id, style: '' })));
+  renderSavedVoices();
+  let queued = 0;
+  const failures = [];
+  try {
+    for (const combination of combinations) {
+      try { await api(`/api/articles/${articleId}/renditions`, combination); queued++; }
+      catch (e) { failures.push(e.message); }
+    }
+    await Promise.all([refreshArticle(), refreshQueue()]);
+    toast(`${queued} combinations queued or already saved, using default delivery.${failures.length ? ` ${failures.length} failed: ${failures[0]}` : ''}`);
+  } finally { state.bulkRendering = false; renderSavedVoices(); }
+};
 $('#render-all').onclick = async () => {
   $('#render-all').disabled = true;
   const articleId = state.article.id;

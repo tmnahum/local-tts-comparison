@@ -54,6 +54,15 @@ def main():
         from kittenml import KittenTTS
         device = 'cpu'
         model = KittenTTS(str(path), backend='cpu')
+    elif kind.startswith('neutts-'):
+        from neutts import NeuTTS2E
+        device = 'cpu'
+        model = NeuTTS2E(backbone_repo=str(next(path.glob('*.gguf'))), codec_repo=str(ROOT / 'models/neutts-codec/model.onnx'), seed=42)
+        model.backbone._ctx.set_n_threads(4, 4)
+    elif kind == 'supertonic':
+        from supertonic import TTS
+        device = 'cpu'
+        model = TTS(model_dir=str(path), auto_download=False, intra_op_num_threads=4, inter_op_num_threads=1)
     elif kind == 'paradee':
         import espeakng_loader
         from phonemizer.backend.espeak.wrapper import EspeakWrapper
@@ -104,6 +113,15 @@ def main():
                 elif kind.startswith('kitten-'):
                     samples = model.generate(request['text'], voice=request['voice'], clean_text=True)
                     sr = 24000
+                elif kind.startswith('neutts-'):
+                    # Keep each generation within the model's ~30-second context.
+                    spans = split_paragraphs([request['text']], limit=250)
+                    samples = np.concatenate([model.infer(span['text'], speaker=request['voice'], emotion=request.get('style') or 'neutral') for span in spans])
+                    sr = 24000
+                elif kind == 'supertonic':
+                    text = ((request.get('style', '') + ' ') if request.get('style') else '') + request['text']
+                    samples, _ = model.synthesize(text, voice_style=model.get_voice_style(request['voice']), lang='en')
+                    sr = model.sample_rate
                 elif kind == 'paradee':
                     samples = model(request['text'])
                     sr = 24000
@@ -117,7 +135,7 @@ def main():
                     # Turbo has a shorter speech-token limit: synthesize safe spans
                     # inside the three-paragraph range, then concatenate continuously.
                     spans = split_paragraphs([request['text']], limit=500)
-                    samples = np.concatenate([model.generate(span['text']).squeeze().detach().cpu().numpy() for span in spans])
+                    samples = np.concatenate([model.generate(((request.get('style', '') + ' ') if i == 0 and request.get('style') else '') + span['text']).squeeze().detach().cpu().numpy() for i, span in enumerate(spans)])
                     sr = model.sr
             samples = np.asarray(samples, dtype=np.float32).reshape(-1)
             if not len(samples) or not np.isfinite(samples).all():

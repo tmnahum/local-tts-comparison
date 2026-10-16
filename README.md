@@ -119,3 +119,9 @@ Upstream timing references: [Kokoro pipeline](https://github.com/hexgrad/kokoro/
 Kokoro continues to use its native phoneme-duration timings. Alignment adds processing time for other models and does not establish perfect acoustic boundaries or prove that every word was spoken.
 
 Upstream: [Kitten ONNX models](https://github.com/KittenML/KittenTTS/blob/main/docs/onnx-models.md), [Pocket TTS](https://github.com/kyutai-labs/pocket-tts), [Paradee](https://github.com/sahilmahendrakar/paradee), [English alignment weights](https://huggingface.co/facebook/wav2vec2-base-960h), [TorchAudio forced alignment](https://docs.pytorch.org/audio/2.8/tutorials/ctc_forced_alignment_api_tutorial.html).
+
+### NeuTTS-2E
+
+The NeuTTS family includes Q4 and Q8 GGUF variants, each with Emily, Paul, Sophie, and Steven. The generation box saves the chosen emotion (neutral, happy, sad, angry, fearful, disgusted, or surprised) with the voice. These fixed-speaker models do not support cloning; NeuTTS Air and Nano are separate cloning models. Word timings can be generated after rendering using the existing English aligner. The bulk button includes each installed variant/speaker once with neutral delivery.
+
+Accept access conditions for `neuphonic/neutts-2e-q4-gguf`, `neuphonic/neutts-2e-q8-gguf`, and `neuphonic/neucodec-onnx-decoder-int8`, then authenticate with `.venv-server/bin/hf auth login` before running setup. Downloads are pinned in `models-manifest.json`. The isolated CPU runtime uses `requirements-neutts.lock`; inference loads local GGUF and ONNX assets offline. Long sections are split into shorter spans to respect NeuTTS's context limit. Model outputs retain the upstream watermark.

@@ -18,10 +18,14 @@ SPECS = {
 for key in ('kitten-mini', 'kitten-micro', 'kitten-nano'):
     SPECS[key] = (MANIFEST[key]['repo'], ['*.json', '*.onnx', '*.npz', 'README.md', 'LICENSE*'])
 SPECS.update({
+    'supertonic': (MANIFEST['supertonic']['repo'], ['onnx/*', 'voice_styles/*', 'config.json', 'README.md', 'LICENSE']),
     'pocket': (MANIFEST['pocket']['repo'], ['languages/english/*', 'README.md', 'LICENSE*']),
     'paradee': (MANIFEST['paradee']['repo'], ['config.json', 'onnx/paradee_int8.onnx', 'README.md', 'LICENSE*']),
     'aligner': (MANIFEST['aligner']['repo'], ['*.json', 'model.safetensors', 'README.md']),
 })
+
+for key in ('neutts-q4', 'neutts-q8', 'neutts-codec'):
+    SPECS[key] = (MANIFEST[key]['repo'], ['*.gguf', '*.onnx', 'meta.yaml', 'README.md', 'LICENSE'])
 
 def download(item):
     key, (repo, patterns) = item

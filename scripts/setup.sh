@@ -20,5 +20,9 @@ if [[ ! -x .venv-light/bin/python ]]; then
   "$READROOM_UV" venv --python 3.11 .venv-light
 fi
 "$READROOM_UV" pip sync --python .venv-light/bin/python requirements-light.lock --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
+if [[ ! -x .venv-neutts/bin/python ]]; then
+  "$READROOM_UV" venv --python 3.11 .venv-neutts
+fi
+"$READROOM_UV" pip sync --python .venv-neutts/bin/python requirements-neutts.lock --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
 .venv-server/bin/python scripts/download_models.py
 printf '\nReady. Run ./scripts/start.sh and open http://localhost:28765\n'

@@ -66,6 +66,8 @@ def validate_selection(body):
     if voice not in [v['id'] for v in spec['voices']]:
         raise HTTPException(422, 'Unknown voice for this model.')
     style = body.style.strip() if spec['styles'] else ''
+    if spec.get('style_options') and style not in spec['style_options']:
+        raise HTTPException(422, 'Unknown performance cue for this model.')
     if spec.get('emotions'):
         style = style or 'neutral'
         if style not in spec['emotions']:
@@ -116,7 +118,7 @@ def status():
     models = []
     for key, spec in MODELS.items():
         ready_file = ROOT / 'models' / key / '.ready.json'
-        models.append({'id': key, **{k: v for k, v in spec.items() if k != 'environment'}, 'downloaded': ready_file.exists(), 'installed': (ROOT / spec['environment'] / 'bin/python').exists()})
+        models.append({'id': key, **{k: v for k, v in spec.items() if k != 'environment'}, 'downloaded': ready_file.exists() and all((ROOT / 'models' / dep / '.ready.json').exists() for dep in spec.get('requires_models', [])), 'installed': (ROOT / spec['environment'] / 'bin/python').exists()})
     return {'models': models, 'engine': {'model': engine.loaded_model, 'phase': engine.phase, 'rendition': engine.current, 'load_seconds': engine.load_seconds}}
 
 
@@ -188,7 +190,7 @@ def article_text(article_id: str):
 def create_rendition(article_id: str, body: RenditionInput):
     doc = require_article(article_id)
     voice, style = validate_selection(body)
-    if not (ROOT / 'models' / body.model / '.ready.json').exists():
+    if not (ROOT / 'models' / body.model / '.ready.json').exists() or any(not (ROOT / 'models' / dep / '.ready.json').exists() for dep in MODELS[body.model].get('requires_models', [])):
         raise HTTPException(409, 'This model is still downloading.')
     rid = hashlib.sha256(json.dumps([article_id, body.model, voice, style, 'three-paragraphs-v1']).encode()).hexdigest()[:24]
     with engine.lock, database() as db:

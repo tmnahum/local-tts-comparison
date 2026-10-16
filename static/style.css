@@ -12,3 +12,5 @@
 .highlight-setting{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px;letter-spacing:0}.highlight-setting select{padding:5px 8px;background:var(--paper);color:var(--ink);border:1px solid var(--line);border-radius:5px}.reader-top{flex-wrap:wrap;gap:12px}.article-sentence.spoken-sentence{background:#f2d18a66;border-radius:3px;box-decoration-break:clone;-webkit-box-decoration-break:clone}@media(max-width:760px){.reader-top #reading-progress{flex-basis:100%;max-width:none;text-align:left}}
 
 .timing-button{margin-top:12px}.reader-top #generate-timings{font-size:11px}
+
+.bulk-actions{display:flex;gap:8px;flex-wrap:wrap}.voice-picker .style-details textarea{width:100%;min-height:85px;padding:12px;resize:vertical;font:inherit;border:1px solid var(--line);border-radius:5px;background:var(--paper)}

@@ -483,3 +483,22 @@ def test_explicit_timing_request_requires_saved_audio(client):
     assert client.post(f'/api/renditions/{rid}/timings').status_code == 409
     assert client.post('/api/renditions/missing/timings').status_code == 404
     assert client.post(f'/api/renditions/{rid}/timings', headers={'origin': 'https://evil.example'}).status_code == 403
+
+
+def test_performance_cue_is_validated_saved_and_separates_cache(client):
+    plain = client.post('/api/voices', json={'model': 'chatterbox'}).json()
+    cue = client.post('/api/voices', json={'model': 'chatterbox', 'style': '[chuckle]'}).json()
+    assert cue['style'] == '[chuckle]'
+    assert cue['id'] != plain['id']
+    assert client.post('/api/voices', json={'model': 'chatterbox', 'style': 'Speak happily'}).status_code == 422
+    assert clip_key('chatterbox', 'default', '', 'Hello.') != clip_key('chatterbox', 'default', '[chuckle]', 'Hello.')
+
+
+def test_neutts_emotion_defaults_and_saved_identity(client):
+    plain = client.post('/api/voices', json={'model': 'neutts-q4'}).json()
+    neutral = client.post('/api/voices', json={'model': 'neutts-q4', 'style': 'neutral'}).json()
+    happy = client.post('/api/voices', json={'model': 'neutts-q4', 'style': 'happy'}).json()
+    assert plain['style'] == 'neutral'
+    assert plain['id'] == neutral['id'] != happy['id']
+    assert client.post('/api/voices', json={'model': 'neutts-q4', 'style': 'whisper'}).status_code == 422
+    assert client.post('/api/voices', json={'model': 'neutts-q8', 'voice': 'unknown'}).status_code == 422
