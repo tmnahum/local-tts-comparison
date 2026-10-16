@@ -25,8 +25,9 @@ function choice(model) {
 }
 function matching(model) {
   const c = choice(model);
-  return state.article?.renditions.find(r => r.model === model.id && r.voice === c.voice && r.style === c.style.trim());
+  return state.article?.renditions.find(r => r.model === model.id && r.voice === c.voice && r.style === c.style.trim() && r.grouped);
 }
+function playbackChunks() { return selectedReading()?.chunks || state.article?.chunks || []; }
 function selectedReading() { return state.article?.renditions.find(r => r.id === state.selected); }
 function voiceName(r) { return state.models.find(m => m.id === r.model)?.voices.find(v => v.id === r.voice)?.name.split(' · ')[0] || r.voice; }
 function savePosition() {
@@ -43,10 +44,42 @@ function renderLibrary() {
   $$('[data-article]').forEach(b => b.onclick = () => openArticle(b.dataset.article).catch(e => toast(e.message)));
 }
 async function refreshLibrary() { state.articles = await api('/api/articles'); renderLibrary(); }
+
+async function refreshQueue() {
+  const queue = await api('/api/queue');
+  const jobs = [...(queue.active ? [queue.active] : []), ...queue.queued];
+  $('#queue-count').textContent = jobs.length;
+  $('#cancel-all').disabled = !jobs.length;
+  const markup = jobs.length ? jobs.map((r, index) => {
+    const active = r.id === queue.active?.id;
+    const model = state.models.find(m => m.id === r.model);
+    return `<div class="queue-job ${active ? 'active' : ''}"><span class="queue-badge">${active ? r.status === 'loading' ? 'LOADING' : 'RENDERING' : `QUEUED ${index + (queue.active ? 0 : 1)}`}</span><div class="queue-job-info"><button class="queue-job-title" data-open-job="${r.article_id}">${escape(r.title)}</button><small>${escape(model?.name || r.model)} · ${escape(voiceName(r))} · ${r.ready}/${r.total} ranges saved</small><div class="card-progress"><div style="width:${r.ready / r.total * 100}%"></div></div></div><button class="button outline small queue-cancel" data-cancel-job="${r.id}">${active ? 'Stop now' : 'Cancel'}</button></div>`;
+  }).join('') : '<p class="queue-empty">Nothing rendering. Your GPU can take a breath.</p>';
+  if ($('#queue-jobs').innerHTML !== markup) {
+    $('#queue-jobs').innerHTML = markup;
+    $$('[data-open-job]').forEach(b => b.onclick = () => openArticle(b.dataset.openJob).catch(e => toast(e.message)));
+    $$('[data-cancel-job]').forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      try {
+        await api(`/api/renditions/${b.dataset.cancelJob}/cancel`, {});
+        $('#queue-feedback').textContent = 'Render cancelled. Completed audio is kept.';
+        await Promise.all([refreshQueue(), refreshArticle()]);
+      } catch (e) { toast(e.message); b.disabled = false; }
+    });
+  }
+}
+$('#cancel-all').onclick = async () => {
+  $('#cancel-all').disabled = true;
+  try {
+    const result = await api('/api/queue/cancel', {});
+    $('#queue-feedback').textContent = `${result.cancelled} render${result.cancelled === 1 ? '' : 's'} cancelled. Completed audio is kept.`;
+    await Promise.all([refreshQueue(), refreshArticle()]);
+  } catch (e) { toast(e.message); $('#cancel-all').disabled = false; }
+};
 function renderCards() {
   $('#model-cards').innerHTML = state.models.map((model, i) => {
     const c = choice(model);
-    return `<article class="model-card" data-model="${model.id}"><div class="card-top"><span class="model-symbol">${['≋', '⌁', '✳'][i]}</span><span class="model-size">${model.size} · LOCAL</span></div><h3>${model.name}</h3><p class="description">${model.description}</p><label for="voice-${model.id}">NARRATOR</label><select id="voice-${model.id}" data-voice="${model.id}">${model.voices.map(v => `<option value="${v.id}" ${v.id === c.voice ? 'selected' : ''}>${v.name}</option>`).join('')}</select>${model.styles ? `<details class="style-details"><summary>Adjust delivery</summary><input aria-label="Qwen delivery instructions" id="style-${model.id}" maxlength="400" value="${escape(c.style)}" placeholder="e.g. Warm, calm audiobook narration"></details>` : ''}<div class="model-actions"><button class="button listen-button" data-listen="${model.id}">▶ Listen</button><button class="button render-button" data-render="${model.id}">Render article</button></div><div class="card-status"><span class="render-status">Ready to read</span><a class="download" hidden>WAV ↓</a></div><div class="card-progress"><div></div></div><div class="card-metrics"></div><div class="card-error" hidden></div></article>`;
+    return `<article class="model-card" data-model="${model.id}"><div class="card-top"><span class="model-symbol">${['≋', '⌁', '✳', '✳'][i] || '≋'}</span><span class="model-size">${model.size} · LOCAL</span></div><h3>${model.name}</h3><p class="description">${model.description}</p><label for="voice-${model.id}">NARRATOR</label><select id="voice-${model.id}" data-voice="${model.id}">${model.voices.map(v => `<option value="${v.id}" ${v.id === c.voice ? 'selected' : ''}>${v.name}</option>`).join('')}</select>${model.styles ? `<details class="style-details"><summary>Adjust delivery</summary><input aria-label="Qwen delivery instructions" id="style-${model.id}" maxlength="400" value="${escape(c.style)}" placeholder="e.g. Warm, calm audiobook narration"></details>` : ''}<div class="model-actions"><button class="button listen-button" data-listen="${model.id}">▶ Listen</button><button class="button render-button" data-render="${model.id}">Render article</button></div><div class="card-status"><span class="render-status">Ready to read</span><a class="download" hidden>WAV ↓</a></div><div class="card-progress"><div></div></div><div class="card-metrics"></div><div class="card-error" hidden></div></article>`;
   }).join('');
   $$('[data-voice]').forEach(input => input.onchange = () => { state.choices[input.dataset.voice].voice = input.value; updateCards(); });
   state.models.filter(m => m.styles).forEach(m => $(`#style-${m.id}`).onchange = e => { choice(m).style = e.target.value; updateCards(); });
@@ -63,7 +96,7 @@ function updateCards() {
     const render = card.querySelector('[data-render]');
     const working = r && ['queued', 'loading', 'generating'].includes(r.status);
     label.classList.toggle('busy', !!working);
-    label.textContent = !available ? 'Model not installed' : !r ? 'Ready to read' : ({ queued: 'Queued · waiting for GPU', loading: 'Loading voice into memory…', generating: `${r.ready}/${r.total} chunks saved`, complete: `✓ Full reading saved · ${formatTime(r.audio_seconds)}`, paused: `Paused · ${r.ready}/${r.total} saved`, error: 'Needs a retry' }[r.status]);
+    label.textContent = !available ? 'Model not installed' : !r ? 'Ready to read' : ({ queued: 'Queued · waiting for GPU', loading: 'Loading voice into memory…', generating: `${r.ready}/${r.total} chunks saved`, complete: `✓ Full reading saved · ${formatTime(r.audio_seconds)}`, paused: `Stopped · ${r.ready}/${r.total} saved`, error: 'Needs a retry' }[r.status]);
     render.textContent = !r ? 'Render article' : working ? 'Stop rendering' : r.status === 'complete' ? 'Saved ✓' : 'Resume article';
     render.disabled = !available || r?.status === 'complete';
     card.querySelector('[data-listen]').disabled = !available;
@@ -74,7 +107,7 @@ function updateCards() {
   }
   const readings = state.article?.renditions || [];
   const saved = $('#saved-readings');
-  const markup = readings.length ? '<span class="saved-label">READINGS</span>' + readings.map(r => `<button class="reading-chip ${r.id === state.selected ? 'active' : ''}" data-reading="${r.id}">${escape(state.models.find(m => m.id === r.model)?.name)} · ${escape(voiceName(r))} ${r.status === 'complete' ? '✓' : r.ready + '/' + r.total}</button>`).join('') : '';
+  const markup = readings.length ? '<span class="saved-label">READINGS</span>' + readings.map(r => `<button class="reading-chip ${r.id === state.selected ? 'active' : ''}" data-reading="${r.id}">${escape(state.models.find(m => m.id === r.model)?.name)} · ${escape(voiceName(r))}${r.grouped ? ' · 3¶' : ' · original'} ${r.status === 'complete' ? '✓' : r.ready + '/' + r.total}</button>`).join('') : '';
   if (saved.innerHTML !== markup) {
     saved.innerHTML = markup;
     $$('[data-reading]').forEach(b => b.onclick = () => {
@@ -104,14 +137,14 @@ async function openArticle(id) {
   $$('[data-paragraph]').forEach(p => {
     const seek = () => {
       if (!state.selected) return toast('Choose a narrator with Listen first.');
-      state.chunk = doc.chunks.findIndex(c => c.paragraph === Number(p.dataset.paragraph));
+      state.chunk = playbackChunks().findIndex(c => c.paragraph <= Number(p.dataset.paragraph) && (c.paragraph_last ?? c.paragraph) >= Number(p.dataset.paragraph));
       state.resumeTime = 0;
       startPlayback();
     };
     p.onclick = seek; p.onkeydown = e => { if (e.key === 'Enter') seek(); };
   });
   renderLibrary(); renderCards();
-  if (doc.renditions.length) selectReading(doc.renditions[0].id);
+  if (doc.renditions.length) selectReading((doc.renditions.find(r => r.grouped && r.model === 'kokoro') || doc.renditions.find(r => r.grouped) || doc.renditions[0]).id);
   updatePlayer();
 }
 async function refreshArticle() {
@@ -124,11 +157,11 @@ async function refreshArticle() {
   prefetchNext();
 }
 function selectReading(id, samePosition = false) {
-  const oldChunk = state.chunk;
+  const oldParagraph = playbackChunks()[state.chunk]?.paragraph || 0;
   stopPlayback(); state.selected = id;
   let stored = {};
   try { stored = JSON.parse(localStorage.getItem(`position:${id}`) || '{}'); } catch {}
-  state.chunk = samePosition ? oldChunk : Math.min(stored.chunk || 0, state.article.chunks.length - 1);
+  state.chunk = samePosition ? Math.max(0, playbackChunks().findIndex(c => c.paragraph <= oldParagraph && (c.paragraph_last ?? c.paragraph) >= oldParagraph)) : Math.min(stored.chunk || 0, playbackChunks().length - 1);
   state.resumeTime = samePosition ? 0 : stored.time || 0;
   $('#seek').value = 0;
   $('#time-label').textContent = `${formatTime(state.resumeTime)} / ${formatTime(selectedReading()?.clips[state.chunk]?.duration)}`;
@@ -138,14 +171,14 @@ async function queueModel(id, articleId = state.article.id) {
   const model = state.models.find(m => m.id === id);
   if (model.styles) choice(model).style = $(`#style-${id}`).value;
   const result = await api(`/api/articles/${articleId}/renditions`, { model: id, ...choice(model) });
-  await refreshArticle();
+  await Promise.all([refreshArticle(), refreshQueue()]);
   return result.id;
 }
 async function renderModel(id) {
   const r = matching(state.models.find(m => m.id === id));
   if (r && ['queued', 'loading', 'generating'].includes(r.status)) {
-    await api(`/api/renditions/${r.id}/pause`, {});
-    toast('Rendering stopped after the current chunk. Saved audio is kept.');
+    await api(`/api/renditions/${r.id}/cancel`, {});
+    toast('Render cancelled. Completed audio is kept.'); await refreshQueue();
     await refreshArticle();
   } else {
     await queueModel(id); toast('Full article queued. You can listen while it renders.');
@@ -202,18 +235,22 @@ function updatePlayer() {
   $('#player-voice').textContent = `${model.name} · ${voiceName(r)}`;
   $('#player-state').textContent = state.playing ? state.waiting ? 'Waiting for the next saved chunk…' : 'Reading from your saved audio' : r.status === 'complete' ? 'Full reading saved locally' : `${r.ready}/${r.total} chunks saved · ${r.status}`;
   $('#play-toggle').textContent = state.playing ? 'Ⅱ' : '▶'; $('#play-toggle').setAttribute('aria-label', state.playing ? 'Pause' : 'Play');
-  const p = state.article.chunks[state.chunk]?.paragraph || 0;
-  $('#chunk-label').textContent = `Paragraph ${p + 1} of ${state.article.paragraphs.length}`;
-  $('#reading-progress').textContent = `${model.name} · paragraph ${p + 1} of ${state.article.paragraphs.length}`;
-  $$('[data-paragraph]').forEach(el => el.classList.toggle('active', Number(el.dataset.paragraph) === p));
-  $('#previous').disabled = state.chunk === 0; $('#next').disabled = state.chunk === state.article.chunks.length - 1;
+  const chunk = playbackChunks()[state.chunk];
+  const p = chunk?.paragraph || 0;
+  const last = chunk?.paragraph_last ?? p;
+  const range = last > p ? `Paragraphs ${p + 1}–${last + 1}` : `Paragraph ${p + 1}`;
+  $('#chunk-label').textContent = `${range} of ${state.article.paragraphs.length}`;
+  $('#reading-progress').textContent = `${model.name} · ${range.toLowerCase()} of ${state.article.paragraphs.length}`;
+  $$('[data-paragraph]').forEach(el => el.classList.toggle('active', Number(el.dataset.paragraph) >= p && Number(el.dataset.paragraph) <= last));
+  $('#previous').disabled = state.chunk === 0; $('#next').disabled = state.chunk === playbackChunks().length - 1;
 }
 audio.onended = () => {
   if (!state.playing || !state.source) return;
-  if (state.chunk + 1 >= state.article.chunks.length) {
+  if (state.chunk + 1 >= playbackChunks().length) {
     state.playing = false; state.chunk = 0; state.source = ''; audio.currentTime = 0; savePosition(); updatePlayer(); toast('Reading complete. A little more room in your day.'); return;
   }
-  const pause = state.article.chunks[state.chunk].paragraph_end ? 250 : 0;
+  const chunk = playbackChunks()[state.chunk];
+  const pause = chunk.pause_ms ?? (chunk.paragraph_end ? 250 : 0);
   nextTimer = setTimeout(() => { if (state.playing) { state.chunk++; state.resumeTime = 0; state.source = ''; state.waiting = true; loadChunk(); } }, pause);
 };
 audio.ontimeupdate = () => {
@@ -228,13 +265,13 @@ $('#play-toggle').onclick = () => {
   else { unlockAudio(); if (state.source && audio.currentTime < audio.duration) { state.playing = true; audio.play().catch(e => toast(e.message)); updatePlayer(); } else startPlayback(); }
 };
 $('#previous').onclick = () => { if (state.chunk > 0) { state.chunk--; state.resumeTime = 0; startPlayback(); } };
-$('#next').onclick = () => { if (state.chunk < state.article.chunks.length - 1) { state.chunk++; state.resumeTime = 0; startPlayback(); } };
+$('#next').onclick = () => { if (state.chunk < playbackChunks().length - 1) { state.chunk++; state.resumeTime = 0; startPlayback(); } };
 $('#seek').oninput = e => { if (Number.isFinite(audio.duration)) audio.currentTime = Number(e.target.value) / 100 * audio.duration; };
 $('#speed').onchange = () => { audio.playbackRate = Number($('#speed').value); };
 $('#render-all').onclick = async () => {
   $('#render-all').disabled = true;
   const articleId = state.article.id;
-  try { for (const m of state.models.filter(m => m.downloaded && m.installed)) await queueModel(m.id, articleId); toast('All three readings queued. Each model will finish before the next starts.'); }
+  try { for (const m of state.models.filter(m => m.downloaded && m.installed)) await queueModel(m.id, articleId); toast('All available readings queued. Each model will finish before the next starts.'); }
   catch (e) { toast(e.message); }
   finally { $('#render-all').disabled = false; }
 };
@@ -275,7 +312,7 @@ async function poll() {
   try {
     const status = await api('/api/status'); state.models = status.models;
     $('#machine-status').textContent = status.engine.phase !== 'idle' ? `${status.models.find(m => m.id === status.engine.model)?.name || 'Model'} · ${status.engine.phase}` : `${status.models.filter(m => m.downloaded).length} models on this machine`;
-    await refreshArticle();
+    await Promise.all([refreshArticle(), refreshQueue()]);
   } catch (e) { $('#machine-status').textContent = 'Connection lost · retrying…'; }
   finally { state.refresh = false; }
 }

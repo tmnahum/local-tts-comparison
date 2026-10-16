@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from app.text import split_paragraphs
 protocol = sys.stdout
 sys.stdout = sys.stderr
 os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
@@ -37,7 +39,7 @@ def main():
         from kokoro import KModel, KPipeline
         model = KModel(config=str(path / 'config.json'), model=str(path / 'kokoro-v1_0.pth')).to(device).eval()
         pipelines = {lang: KPipeline(lang_code=lang, model=model, device=device) for lang in ('a', 'b')}
-    elif kind == 'qwen':
+    elif kind in ('qwen', 'qwen-small'):
         from qwen_tts import Qwen3TTSModel
         model = Qwen3TTSModel.from_pretrained(str(path), device_map=device, dtype=torch.bfloat16 if device == 'cuda' else torch.float32, attn_implementation='sdpa')
     elif kind == 'chatterbox':
@@ -59,11 +61,14 @@ def main():
                     outputs = list(pipelines[request['voice'][0]](request['text'], voice=voice, speed=1))
                     samples = np.concatenate([o.audio.detach().cpu().numpy() for o in outputs])
                     sr = 24000
-                elif kind == 'qwen':
-                    audio, sr = model.generate_custom_voice(text=request['text'], language='English', speaker=request['voice'], instruct=request.get('style') or 'Read naturally and clearly, with calm pacing. Read the text exactly.', max_new_tokens=2048)
+                elif kind in ('qwen', 'qwen-small'):
+                    audio, sr = model.generate_custom_voice(text=request['text'], language='English', speaker=request['voice'], instruct=(request.get('style') or 'Read naturally and clearly, with calm pacing. Read the text exactly.') if kind == 'qwen' else None, max_new_tokens=2048)
                     samples = audio[0]
                 else:
-                    samples = model.generate(request['text']).squeeze().detach().cpu().numpy()
+                    # Turbo has a shorter speech-token limit: synthesize safe spans
+                    # inside the three-paragraph range, then concatenate continuously.
+                    spans = split_paragraphs([request['text']], limit=500)
+                    samples = np.concatenate([model.generate(span['text']).squeeze().detach().cpu().numpy() for span in spans])
                     sr = model.sr
             samples = np.asarray(samples, dtype=np.float32).reshape(-1)
             if not len(samples) or not np.isfinite(samples).all():

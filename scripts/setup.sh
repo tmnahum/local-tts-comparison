@@ -17,4 +17,4 @@ for name in server tts chatterbox; do
   "$READROOM_UV" pip sync --python ".venv-$name/bin/python" "requirements-$name.lock" --extra-index-url https://download.pytorch.org/whl/cu124 --index-strategy unsafe-best-match
 done
 .venv-server/bin/python scripts/download_models.py
-printf '\nReady. Run ./scripts/start.sh and open http://localhost:8765\n'
+printf '\nReady. Run ./scripts/start.sh and open http://localhost:28765\n'

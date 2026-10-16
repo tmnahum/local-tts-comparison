@@ -1,10 +1,12 @@
 # Readroom
 
-A local English article reader and TTS comparison MVP. Fetch an article or paste text, save it once, and render the **entire article** with Kokoro, Chatterbox Turbo, and Qwen3-TTS. Each voice/delivery setting gets its own saved rendition. The comparison sample includes prose, dialogue, dates/numbers, money, and abbreviations.
+A local English article reader and TTS comparison MVP. Fetch an article or paste text, save it once, and render the **entire article** with Kokoro, Chatterbox Turbo, and both Qwen3-TTS sizes. Each voice/delivery setting gets its own saved rendition. The comparison sample includes prose, dialogue, dates/numbers, money, and abbreviations.
 
 ## Open the app
 
-http://localhost:8765
+Public test URL: https://readroom.remoth.net
+
+Local URL: http://localhost:28765
 
 ```bash
 ./scripts/start.sh
@@ -20,18 +22,20 @@ systemctl --user stop readroom
 journalctl --user -u readroom -f
 ```
 
-The service binds to loopback. It has no authentication and is intended for this machine; remote access/authentication is outside this MVP.
+The service binds to loopback port 28765. The existing remotely managed Cloudflare tunnel `tgl` publishes it at `https://readroom.remoth.net` through a proxied CNAME and a public-hostname route to `http://localhost:28765`. This test deployment has no login; anyone with the URL can access the library and generate readings.
 
 ## Reading and comparison
 
 1. **Add an article** accepts a public HTML URL or pasted text. The cleaned article, title, source URL, and paragraph boundaries are saved locally. Login/paywall/JavaScript-only pages may require pasted text.
-2. Choose a narrator and **Render article**, or **Render all three** to queue all models. Each model completes an entire rendition before the next starts, avoiding GPU contention and repeated model loading.
-3. **Listen** starts at the current chunk when changing models, making the same passage easy to compare. It also queues a rendition if needed. Saved-reading chips select previous versions; playback positions persist in this browser.
-4. The player preloads the next completed chunk. It preserves paragraphs, splits long ones at sentence boundaries (650 characters maximum, clause/word fallback), and adds a 250 ms paragraph pause. Playback speed changes preserve pitch.
-5. Click a paragraph to jump there. Stop rendering and resume later without losing completed chunks. Closing the browser does not stop generation. Restarting the service pauses interrupted jobs; **Resume article** continues them.
-6. **WAV ↓** exports a whole rendition once complete, with the same paragraph pauses. **Export text** downloads the saved article JSON.
+2. Choose a narrator and **Render article**, or **Render all models** to queue all models. Each model completes an entire rendition before the next starts, avoiding GPU contention and repeated model loading.
+3. **Listen** starts at the current paragraph range when changing models, making the same passage easy to compare. It also queues a rendition if needed. Saved-reading chips select previous versions; playback positions persist in this browser.
+4. The player preloads the next completed chunk. New readings group three paragraphs per range (1,950 character safety limit, with sentence/word splitting for unusually long passages), with no added gap between ranges. Older saved readings remain playable. Playback speed changes preserve pitch.
+5. Click a paragraph to jump to its range. The global **Render queue** shows active and waiting jobs across articles. **Stop now** kills the active inference process immediately; **Cancel** removes a queued job; **Stop all** cancels both. Completed audio is retained for resuming. Closing the browser does not stop generation. Restarting the service recovers unfinished queued jobs.
+6. **WAV ↓** exports a whole rendition once complete, with the same range boundaries. **Export text** downloads the saved article JSON.
 
-This is progressive paragraph audio, not token-level streaming. If a model generates more slowly than playback, the player waits at a chunk boundary. For uninterrupted listening, render the full article first. Paragraph-level generation can reset prosody; there is no cross-paragraph acoustic context in this MVP. Displayed real-time speed excludes model loading and queue wait.
+This is progressive paragraph audio, not token-level streaming. If a model generates more slowly than playback, the player waits at a chunk boundary. For uninterrupted listening, render the full article first. Prosody can reset between ranges. Kokoro also splits internally at its token limit; Chatterbox uses smaller internal sentence groups to avoid truncation. Displayed real-time speed excludes model loading and queue wait.
+
+Three original sample articles cover humor, suspense, and science. Add them with ` .venv-server/bin/python scripts/add_samples.py --render` (queues Kokoro).
 
 ## Local models
 
@@ -39,7 +43,10 @@ This is progressive paragraph audio, not token-level streaming. If a model gener
 | --- | --- | --- | --- |
 | Kokoro 82M | Heart, Bella, Michael, Emma, George | ~315 MB | Apache-2.0 |
 | Chatterbox Turbo 350M | Built-in narrator | ~2.8 GB | MIT |
+| Qwen3-TTS 0.6B CustomVoice | Ryan, Aiden | ~2.4 GB | Apache-2.0 |
 | Qwen3-TTS 1.7B CustomVoice | Ryan, Aiden; delivery instructions | ~4.3 GB | Apache-2.0 |
+
+The 0.6B Qwen model uses fixed narrator delivery; the installed Qwen adapter only enables delivery instructions for 1.7B.
 
 Model revisions are pinned in `models-manifest.json`. Dependencies are pinned in the three `requirements-*.lock` files. Chatterbox needs a different Transformers version, so it has its own Python environment. The service itself stays lightweight; one separate persistent inference process holds one model, and exits on switching. GPU memory is released after two idle minutes.
 

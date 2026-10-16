@@ -14,9 +14,15 @@ MODELS = {
         'environment': '.venv-chatterbox', 'styles': False,
     },
     'qwen': {
-        'name': 'Qwen3-TTS', 'size': '1.7B', 'description': 'A more deliberate reader with adjustable delivery.',
+        'name': 'Qwen3-TTS 1.7B', 'size': '1.7B', 'description': 'A more deliberate reader with adjustable delivery.',
         'license': 'Apache-2.0', 'default_voice': 'Ryan',
         'voices': [{'id': 'Ryan', 'name': 'Ryan · Rhythmic'}, {'id': 'Aiden', 'name': 'Aiden · American'}],
         'environment': '.venv-tts', 'styles': True,
+    },
+    'qwen-small': {
+        'name': 'Qwen3-TTS 0.6B', 'size': '0.6B', 'description': 'Smaller Qwen, with the same English narrator choices.',
+        'license': 'Apache-2.0', 'default_voice': 'Ryan',
+        'voices': [{'id': 'Ryan', 'name': 'Ryan · Rhythmic'}, {'id': 'Aiden', 'name': 'Aiden · American'}],
+        'environment': '.venv-tts', 'styles': False,
     },
 }

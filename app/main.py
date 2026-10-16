@@ -77,6 +77,25 @@ def articles():
     return [dict(r) | {'paragraphs': len(json.loads(r['paragraphs'])), 'words': len(' '.join(json.loads(r['paragraphs'])).split())} for r in rows]
 
 
+@app.get('/api/queue')
+def render_queue():
+    with database() as db:
+        rows = db.execute("SELECT r.*, a.title FROM renditions r JOIN articles a ON a.id=r.article_id WHERE r.status IN ('queued','loading','generating') ORDER BY r.queued_at,r.rowid").fetchall()
+    jobs = [rendition_info(row) for row in rows]
+    active = next((r for r in jobs if r['id'] == engine.current), None)
+    return {'active': active, 'queued': [r for r in jobs if r is not active]}
+
+
+@app.post('/api/queue/cancel')
+def cancel_queue():
+    return {'cancelled': engine.cancel_all()}
+
+
+@app.post('/api/renditions/{rid}/cancel')
+def cancel_rendition(rid: str):
+    return {'cancelled': engine.cancel(rid)}
+
+
 @app.post('/api/articles')
 async def create_article(body: ArticleInput):
     if body.url.strip():
@@ -117,7 +136,7 @@ def article_text(article_id: str):
 
 @app.post('/api/articles/{article_id}/renditions')
 def create_rendition(article_id: str, body: RenditionInput):
-    require_article(article_id)
+    doc = require_article(article_id)
     spec = MODELS.get(body.model)
     if not spec:
         raise HTTPException(422, 'Unknown model.')
@@ -127,25 +146,25 @@ def create_rendition(article_id: str, body: RenditionInput):
     if voice not in [v['id'] for v in spec['voices']]:
         raise HTTPException(422, 'Unknown voice for this model.')
     style = body.style.strip() if spec['styles'] else ''
-    rid = hashlib.sha256(json.dumps([article_id, body.model, voice, style]).encode()).hexdigest()[:24]
-    with database() as db:
+    rid = hashlib.sha256(json.dumps([article_id, body.model, voice, style, 'three-paragraphs-v1']).encode()).hexdigest()[:24]
+    with engine.lock, database() as db:
         db.execute('BEGIN IMMEDIATE')
         existing = db.execute('SELECT status FROM renditions WHERE id=?', (rid,)).fetchone()
         enqueue = not existing or existing[0] in ('error', 'paused')
         if not existing:
-            db.execute('INSERT INTO renditions VALUES (?,?,?,?,?,?,?,?)', (rid, article_id, body.model, voice, style, 'queued', None, datetime.now(timezone.utc).isoformat()))
+            now = datetime.now(timezone.utc).isoformat()
+            db.execute('INSERT INTO renditions (id,article_id,model,voice,style,status,error,created,chunks,queued_at) VALUES (?,?,?,?,?,?,?,?,?,?)', (rid, article_id, body.model, voice, style, 'queued', None, now, json.dumps(chunk_paragraphs(doc['paragraphs'])), now))
         elif enqueue:
-            db.execute("UPDATE renditions SET status='queued', error=NULL WHERE id=?", (rid,))
-    if enqueue:
-        engine.enqueue(rid)
+            db.execute("UPDATE renditions SET status='queued', error=NULL,queued_at=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), rid))
+        db.commit()
+        if enqueue:
+            engine.enqueue(rid)
     return {'id': rid}
 
 
 @app.post('/api/renditions/{rid}/pause')
 def pause_rendition(rid: str):
-    with database() as db:
-        result = db.execute("UPDATE renditions SET status='paused' WHERE id=? AND status IN ('queued','loading','generating')", (rid,))
-    return {'paused': bool(result.rowcount)}
+    return {'paused': engine.cancel(rid)}
 
 
 @app.get('/api/audio/{filename}')
@@ -181,8 +200,10 @@ def download_rendition(rid: str):
                         if index == 0:
                             out.setparams(part.getparams())
                         out.writeframes(part.readframes(part.getnframes()))
-                        if index < len(reading['clips']) - 1 and doc['chunks'][index]['paragraph_end']:
-                            out.writeframes(b'\x00' * int(part.getframerate() * .25) * part.getsampwidth() * part.getnchannels())
+                        chunk = reading['chunks'][index]
+                        pause_ms = chunk.get('pause_ms', 250 if chunk['paragraph_end'] else 0)
+                        if index < len(reading['clips']) - 1 and pause_ms:
+                            out.writeframes(b'\x00' * int(part.getframerate() * pause_ms / 1000) * part.getsampwidth() * part.getnchannels())
             from pathlib import Path
             Path(temporary).replace(path)
         finally:

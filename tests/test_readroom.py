@@ -9,7 +9,7 @@ import wave
 os.environ['READROOM_DATA'] = tempfile.mkdtemp(prefix='readroom-tests-')
 import pytest
 from fastapi.testclient import TestClient
-from app.text import chunk_paragraphs, paragraphs_from_text
+from app.text import chunk_paragraphs, split_paragraphs, paragraphs_from_text
 from app.fetcher import public_address, fetch_article, extract_readable
 from app.engine import engine, clip_key
 from app.main import app
@@ -27,7 +27,7 @@ def client():
 
 def test_chunking_preserves_text_and_paragraph_boundaries():
     paragraphs = ["Dr. Morgan paid $125.50. " + 'A complete sentence deserves room. ' * 25, 'A second paragraph, with a different thought.']
-    chunks = chunk_paragraphs(paragraphs)
+    chunks = split_paragraphs(paragraphs)
     assert len(chunks) > 2
     for i, original in enumerate(paragraphs):
         parts = [c for c in chunks if c['paragraph'] == i]
@@ -40,7 +40,7 @@ def test_chunking_preserves_text_and_paragraph_boundaries():
 
 def test_overlong_sentence_preserves_words():
     text = ' '.join(['uninterrupted'] * 300)
-    chunks = chunk_paragraphs([text])
+    chunks = split_paragraphs([text])
     assert ' '.join(c['text'] for c in chunks) == text
     assert all(len(c['text']) <= 650 for c in chunks)
 
@@ -125,13 +125,16 @@ def test_rendition_validation_dedup_pause_resume(client):
     assert client.get('/api/articles/' + aid).json()['renditions'][0]['status'] == 'paused'
     assert client.post(url, json={'model': 'kokoro'}).json()['id'] == rid
     assert client.get('/api/articles/' + aid).json()['renditions'][0]['status'] == 'queued'
-    initialize()  # A server restart preserves progress and pauses interrupted work.
-    assert client.get('/api/articles/' + aid).json()['renditions'][0]['status'] == 'paused'
+    initialize()  # A server restart preserves the queue.
+    assert client.get('/api/articles/' + aid).json()['renditions'][0]['status'] == 'queued'
 
 
 def test_complete_download_joins_chunks_in_order_with_paragraph_pause(client):
     aid = client.post('/api/articles', json={'title': 'Audio export', 'text': 'First.\n\nSecond.'}).json()['id']
     rid = client.post('/api/articles/' + aid + '/renditions', json={'model': 'kokoro'}).json()['id']
+    with database() as db:
+        db.execute('UPDATE articles SET chunks=? WHERE id=?', (json.dumps(split_paragraphs(['First.', 'Second.'])), aid))
+        db.execute('UPDATE renditions SET chunks=NULL WHERE id=?', (rid,))
     for text, value in [('First.', 100), ('Second.', 200)]:
         key = clip_key('kokoro', 'af_heart', '', text)
         with wave.open(str(DATA / 'audio' / (key + '.wav')), 'wb') as wav:
@@ -159,3 +162,100 @@ def test_empty_input_and_missing_article(client):
 
 def test_cache_separates_voice_and_style():
     assert len({clip_key('kokoro', 'af_heart', '', 'Text'), clip_key('kokoro', 'af_bella', '', 'Text'), clip_key('qwen', 'Ryan', '', 'Text'), clip_key('qwen', 'Ryan', 'Whisper', 'Text')}) == 4
+
+
+def test_three_paragraph_ranges_preserve_every_word_and_map_boundaries():
+    paragraphs = [f'Paragraph {i} has a thought of its own.' for i in range(7)]
+    chunks = chunk_paragraphs(paragraphs)
+    assert [(c['paragraph'], c['paragraph_last']) for c in chunks] == [(0, 2), (3, 5), (6, 6)]
+    assert ' '.join(c['text'] for c in chunks) == ' '.join(paragraphs)
+    assert all(c['pause_ms'] == 0 for c in chunks)
+
+
+def test_oversized_three_paragraph_range_still_has_bounded_chunks():
+    paragraphs = [('A sentence with room to breathe. ' * 100).strip(), 'Second.', 'Third.', 'Fourth.']
+    chunks = chunk_paragraphs(paragraphs)
+    assert all(len(c['text']) <= 1950 for c in chunks)
+    assert ' '.join(c['text'] for c in chunks) == ' '.join(paragraphs)
+    assert chunks[-1]['paragraph'] == 3
+
+
+def test_queue_visible_across_articles_and_cancellable(client):
+    client.post('/api/queue/cancel')
+    ids = []
+    for title in ('First queued article', 'Second queued article'):
+        aid = client.post('/api/articles', json={'title': title, 'text': 'One.\n\nTwo.\n\nThree.\n\nFour.'}).json()['id']
+        ids.append(client.post('/api/articles/' + aid + '/renditions', json={'model': 'kokoro'}).json()['id'])
+    queue = client.get('/api/queue').json()
+    assert queue['active'] is None
+    assert [r['id'] for r in queue['queued']] == ids
+    assert queue['queued'][0]['total'] == 2
+    assert queue['queued'][0]['chunks'][0]['paragraph_last'] == 2
+    assert client.post('/api/renditions/' + ids[0] + '/cancel').json()['cancelled']
+    assert [r['id'] for r in client.get('/api/queue').json()['queued']] == [ids[1]]
+    assert client.post('/api/queue/cancel').json()['cancelled'] == 1
+    assert client.get('/api/queue').json() == {'active': None, 'queued': []}
+
+
+def test_active_process_is_killed_and_immediate_retry_survives(client):
+    import subprocess
+    import sys
+    import time
+    from app.engine import Engine
+
+    class BlockingEngine(Engine):
+        starts = 0
+        def load(self, model, ticket):
+            with self.lock:
+                self.check(ticket)
+                self.process = subprocess.Popen([sys.executable, '-u', '-c', 'import time; time.sleep(60)'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+                self.loaded_model = model
+                self.starts += 1
+
+    aid = client.post('/api/articles', json={'title': 'Cancellation process test', 'text': 'Uncached test speech.'}).json()['id']
+    rid = client.post('/api/articles/' + aid + '/renditions', json={'model': 'kokoro'}).json()['id']
+    e = BlockingEngine()
+    e.thread.start()
+    e.enqueue(rid)
+    def wait_for(condition):
+        deadline = time.monotonic() + 3
+        while not condition():
+            assert time.monotonic() < deadline
+            time.sleep(.01)
+    try:
+        wait_for(lambda: e.starts == 1)
+        process = e.process
+        start = time.monotonic()
+        with e.lock:
+            assert e.cancel(rid)
+            with database() as db:
+                db.execute("UPDATE renditions SET status='queued' WHERE id=?", (rid,))
+            e.enqueue(rid)  # Retry before the cancelled worker has unwound.
+        wait_for(lambda: process.poll() is not None)
+        assert time.monotonic() - start < 2
+        wait_for(lambda: e.starts == 2)
+        assert e.cancel(rid)
+        wait_for(lambda: e.current is None)
+        with database() as db:
+            row = db.execute('SELECT status,error FROM renditions WHERE id=?', (rid,)).fetchone()
+        assert tuple(row) == ('paused', None)
+    finally:
+        e.close()
+
+
+def test_grouped_download_has_no_inserted_silence(client):
+    aid = client.post('/api/articles', json={'title': 'Continuous export', 'text': 'Alpha.\n\nBeta.\n\nGamma.\n\nDelta.'}).json()['id']
+    rid = client.post('/api/articles/' + aid + '/renditions', json={'model': 'kokoro'}).json()['id']
+    reading = client.get('/api/articles/' + aid).json()['renditions'][0]
+    assert reading['grouped']
+    for chunk in reading['chunks']:
+        key = clip_key('kokoro', 'af_heart', '', chunk['text'])
+        with wave.open(str(DATA / 'audio' / (key + '.wav')), 'wb') as wav:
+            wav.setparams((1, 2, 24000, 0, 'NONE', 'not compressed'))
+            wav.writeframes(b'\x01\x00' * 2400)
+        with database() as db:
+            db.execute('INSERT INTO clips VALUES (?,?,?,?,?)', (key, .1, .01, .5, 24000))
+    response = client.get('/api/renditions/' + rid + '/download')
+    assert response.status_code == 200
+    with wave.open(io.BytesIO(response.content)) as wav:
+        assert wav.getnframes() == 4800

@@ -6,7 +6,7 @@ def paragraphs_from_text(text):
     return [re.sub(r'\s+', ' ', p).strip() for p in re.split(r'\n\s*\n', text.strip()) if p.strip()]
 
 
-def chunk_paragraphs(paragraphs, limit=650):
+def split_paragraphs(paragraphs, limit=650):
     chunks = []
     for index, paragraph in enumerate(paragraphs):
         # Protect common abbreviations and decimal points from sentence splitting.
@@ -38,3 +38,25 @@ def chunk_paragraphs(paragraphs, limit=650):
         if current:
             chunks.append({'text': current, 'paragraph': index, 'paragraph_end': True})
     return chunks
+
+
+def chunk_paragraphs(paragraphs, limit=1950, paragraphs_per_chunk=3):
+    """Feed three paragraphs together, with a safety split for very long prose."""
+    result = []
+    for start in range(0, len(paragraphs), paragraphs_per_chunk):
+        group = paragraphs[start:start + paragraphs_per_chunk]
+        current = None
+        for part in split_paragraphs(group, limit=limit):
+            paragraph = start + part['paragraph']
+            if current and len(current['text']) + len(part['text']) + 1 > limit:
+                result.append(current)
+                current = None
+            if current is None:
+                current = {'text': part['text'], 'paragraph': paragraph, 'paragraph_last': paragraph, 'paragraph_end': part['paragraph_end'], 'pause_ms': 0}
+            else:
+                current['text'] += ' ' + part['text']
+                current['paragraph_last'] = paragraph
+                current['paragraph_end'] = part['paragraph_end']
+        if current:
+            result.append(current)
+    return result

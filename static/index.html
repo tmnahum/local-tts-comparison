@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Readroom — a place to listen</title><link rel="stylesheet" href="/style.css"><script defer src="/app.js"></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Readroom — a place to listen</title><link rel="stylesheet" href="/style.css?v=4"><script defer src="/app.js?v=4"></script></head>
 <body>
   <aside class="sidebar">
     <a class="brand" href="/" aria-label="Readroom home"><span class="brandmark">◖</span> readroom<span class="brand-dot">.</span></a>
@@ -14,10 +14,11 @@
   <main>
     <header class="topbar"><span>THE LISTENING DESK</span><span class="machine-status" id="machine-status">Connecting to your models…</span></header>
     <div class="page-content">
+      <section class="render-queue" aria-labelledby="queue-title"><div class="section-heading"><div><h2 id="queue-title">Render queue <span id="queue-count">0</span></h2><p>Across your library. Stop a render at any time.</p></div><button id="cancel-all" class="button outline small" disabled>Stop all</button></div><div id="queue-jobs"><p class="queue-empty">Nothing rendering. Your GPU can take a breath.</p></div><div id="queue-feedback" class="queue-feedback" role="status"></div></section>
       <section class="welcome" id="welcome"><div class="eyebrow">WORDS, AT YOUR OWN PACE</div><h1>A little room<br>for a good read.</h1><p>Bring an article. Find your narrator.<br>Keep every reading, and listen again.</p><button class="button primary" id="welcome-add">Add your first article <span>↗</span></button><button class="button subtle" id="load-sample">Try a sample reading</button><div class="welcome-lines"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="welcome-note">THREE LOCAL VOICES. ONE SAVED ARTICLE. NO API BILL.</div></section>
       <div id="workspace" hidden>
         <section class="article-heading"><div class="eyebrow" id="article-source">SAVED READING</div><h1 id="article-title"></h1><div class="article-meta"><span id="article-meta"></span><a id="source-link" target="_blank" rel="noopener noreferrer" hidden>View original ↗</a><a id="save-text">Export text ↓</a></div></section>
-        <section class="studio" aria-labelledby="studio-title"><div class="section-heading"><div><h2 id="studio-title">Find your voice</h2><p>Same words, three different readings. Each version is saved.</p></div><button id="render-all" class="button outline small">Render all three <span>↗</span></button></div><div id="model-cards" class="model-cards"></div><div class="studio-note"><span>↳</span> One model at a time. Listen as paragraphs arrive, or render the whole article first.</div><div id="saved-readings" class="saved-readings"></div></section>
+        <section class="studio" aria-labelledby="studio-title"><div class="section-heading"><div><h2 id="studio-title">Find your voice</h2><p>Same words, different readings. Each version is saved.</p></div><button id="render-all" class="button outline small">Render all models <span>↗</span></button></div><div id="model-cards" class="model-cards"></div><div class="studio-note"><span>↳</span> Three paragraphs per range, with no added gap between ranges. One model renders at a time.</div><div id="saved-readings" class="saved-readings"></div></section>
         <section class="reader"><div class="reader-top"><span class="section-label">THE ARTICLE</span><span id="reading-progress">Select a voice to start listening</span></div><div id="article-body" class="article-body"></div><div class="end-mark">◆</div></section>
       </div>
     </div>

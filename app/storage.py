@@ -30,7 +30,12 @@ def initialize():
         CREATE TABLE IF NOT EXISTS renditions (id TEXT PRIMARY KEY, article_id TEXT NOT NULL, model TEXT NOT NULL, voice TEXT NOT NULL, style TEXT NOT NULL, status TEXT NOT NULL, error TEXT, created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS clips (key TEXT PRIMARY KEY, duration REAL, generation_seconds REAL, peak_vram_gb REAL, sample_rate INTEGER);
         ''')
-        db.execute("UPDATE renditions SET status='paused' WHERE status IN ('queued','loading','generating')")
+        columns = {r[1] for r in db.execute('PRAGMA table_info(renditions)')}
+        for name, kind in [('chunks', 'TEXT'), ('queued_at', 'TEXT')]:
+            if name not in columns:
+                db.execute(f'ALTER TABLE renditions ADD COLUMN {name} {kind}')
+        db.execute('UPDATE renditions SET queued_at=created WHERE queued_at IS NULL')
+        db.execute("UPDATE renditions SET status='queued' WHERE status IN ('loading','generating')")
 
 
 def article(article_id):
