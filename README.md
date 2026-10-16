@@ -95,7 +95,7 @@ Bundled fonts are DM Sans and Libre Caslon Text, under the SIL Open Font License
 
 ## Word timing and targeted audio effects
 
-Kokoro English exposes token start/end timestamps derived from predicted phoneme durations. Readroom saves these alongside each clip in `.words.json`, merges token pieces into displayed words, and maps chunk-relative offsets back to the original article. The player highlights the current word using the audio clock, including when seeking or changing speed. Three-paragraph synthesis stays continuous. Unmatched tokens are skipped rather than assigned guessed positions.
+Kokoro English exposes token start/end timestamps derived from predicted phoneme durations. Readroom saves these alongside each clip in `.words.json`, merges token pieces into displayed words, and maps chunk-relative offsets back to the original article. The player highlights the current word using the audio clock, including when seeking or changing speed. Click a timed word (or focus it and press Enter/Space) to start playback at its timestamp, across paragraph ranges. Untimed text falls back to the paragraph range. Three-paragraph synthesis stays continuous. Unmatched tokens are skipped rather than assigned guessed positions.
 
 Existing Kokoro audio predates this metadata. **Enable word highlighting** or **Listen** queues regeneration of ranges missing timings; already timed ranges are reused. Other models retain paragraph highlighting. Timestamps are approximate acoustic boundaries, not perfect separation of neighboring sounds.
 

@@ -145,13 +145,27 @@ async function openArticle(id) {
     return `<p class="article-paragraph" data-paragraph="${i}" tabindex="0" title="Listen from this paragraph">${content}</p>`;
   }).join('');
   $$('[data-paragraph]').forEach(p => {
-    const seek = () => {
+    const seek = event => {
       if (!state.selected) return toast('Choose a narrator with Listen first.');
-      state.chunk = playbackChunks().findIndex(c => c.paragraph <= Number(p.dataset.paragraph) && (c.paragraph_last ?? c.paragraph) >= Number(p.dataset.paragraph));
-      state.resumeTime = 0;
+      const word = event.target.closest('[data-word-start]');
+      const target = word && state.wordTargets?.get(Number(word.dataset.wordStart));
+      unlockAudio();
+      if (target) {
+        state.chunk = target.chunk;
+        state.resumeTime = target.time;
+      } else {
+        state.chunk = Math.max(0, playbackChunks().findIndex(c => c.paragraph <= Number(p.dataset.paragraph) && (c.paragraph_last ?? c.paragraph) >= Number(p.dataset.paragraph)));
+        state.resumeTime = 0;
+        if (word) toast('Word timing is unavailable here. Starting at the paragraph range.');
+      }
       startPlayback();
     };
-    p.onclick = seek; p.onkeydown = e => { if (e.key === 'Enter') seek(); };
+    p.onclick = seek;
+    p.onkeydown = e => {
+      if (e.key === 'Enter' || (e.key === ' ' && e.target.matches('[data-word-start]'))) {
+        e.preventDefault(); seek(e);
+      }
+    };
   });
   renderLibrary(); renderCards();
   if (doc.renditions.length) selectReading((doc.renditions.find(r => r.grouped && r.model === 'kokoro') || doc.renditions.find(r => r.grouped) || doc.renditions[0]).id);
@@ -252,6 +266,7 @@ function updatePlayer() {
   $('#chunk-label').textContent = `${range} of ${state.article.paragraphs.length}`;
   $('#reading-progress').textContent = `${model.name} · ${range.toLowerCase()} of ${state.article.paragraphs.length}`;
   $$('[data-paragraph]').forEach(el => el.classList.toggle('active', Number(el.dataset.paragraph) >= p && Number(el.dataset.paragraph) <= last));
+  updateWordTargets();
   updateWordHighlight();
   $('#previous').disabled = state.chunk === 0; $('#next').disabled = state.chunk === playbackChunks().length - 1;
 }
@@ -371,3 +386,26 @@ function animateWordHighlight() {
 // Media events also update while a browser throttles background animation frames.
 for (const event of ['timeupdate', 'seeked', 'loadedmetadata', 'pause', 'ended']) audio.addEventListener(event, updateWordHighlight);
 requestAnimationFrame(animateWordHighlight);
+
+function updateWordTargets() {
+  const reading = selectedReading();
+  state.wordTargets = new Map();
+  reading?.clips.forEach((clip, chunk) => {
+    const offset = reading.chunk_offsets?.[chunk];
+    if (offset == null) return;
+    for (const word of clip?.words || []) state.wordTargets.set(offset + word.start, { chunk, time: word.start_time });
+  });
+  for (const el of $$('.article-word')) {
+    const timed = state.wordTargets.has(Number(el.dataset.wordStart));
+    if (el.classList.contains('seekable-word') === timed) continue;
+    el.classList.toggle('seekable-word', timed);
+    if (timed) {
+      el.setAttribute('role', 'button');
+      el.setAttribute('tabindex', '0');
+      el.setAttribute('title', 'Read from this word');
+      el.setAttribute('aria-label', `Read from “${el.textContent}”`);
+    } else {
+      for (const attr of ['role', 'tabindex', 'title', 'aria-label']) el.removeAttribute(attr);
+    }
+  }
+}
