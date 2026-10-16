@@ -29,9 +29,10 @@ def initialize():
         CREATE TABLE IF NOT EXISTS articles (id TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT, byline TEXT, paragraphs TEXT NOT NULL, chunks TEXT NOT NULL, created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS renditions (id TEXT PRIMARY KEY, article_id TEXT NOT NULL, model TEXT NOT NULL, voice TEXT NOT NULL, style TEXT NOT NULL, status TEXT NOT NULL, error TEXT, created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS clips (key TEXT PRIMARY KEY, duration REAL, generation_seconds REAL, peak_vram_gb REAL, sample_rate INTEGER);
+        CREATE TABLE IF NOT EXISTS voice_selections (id TEXT PRIMARY KEY, model TEXT NOT NULL, voice TEXT NOT NULL, style TEXT NOT NULL, starred INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL);
         ''')
         columns = {r[1] for r in db.execute('PRAGMA table_info(renditions)')}
-        for name, kind in [('chunks', 'TEXT'), ('queued_at', 'TEXT')]:
+        for name, kind in [('chunks', 'TEXT'), ('queued_at', 'TEXT'), ('timing_requested', 'INTEGER NOT NULL DEFAULT 0')]:
             if name not in columns:
                 db.execute(f'ALTER TABLE renditions ADD COLUMN {name} {kind}')
         db.execute('UPDATE renditions SET queued_at=created WHERE queued_at IS NULL')

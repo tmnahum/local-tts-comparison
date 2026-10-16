@@ -1,6 +1,14 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
-const state = { models: [], articles: [], article: null, selected: null, chunk: 0, playing: false, waiting: false, source: '', loadToken: 0, importMode: 'url', choices: {}, refresh: false };
+const state = { models: [], articles: [], article: null, selected: null, chunk: 0, playing: false, waiting: false, source: '', loadToken: 0, importMode: 'url', choices: {}, savedVoices: [], pickerModel: 'kokoro', refresh: false };
+try { const saved = JSON.parse(localStorage.getItem('readroom:picker') || '{}'); state.pickerModel = saved.model || 'kokoro'; state.choices = saved.choices || {}; } catch {}
+state.highlightMode = ['word', 'sentence', 'none'].includes(localStorage.getItem('readroom:highlight')) ? localStorage.getItem('readroom:highlight') : 'word';
+$('#highlight-mode').value = state.highlightMode;
+$('#highlight-mode').onchange = e => {
+  state.highlightMode = e.target.value;
+  localStorage.setItem('readroom:highlight', state.highlightMode);
+  updatePlayer(); updateWordHighlight();
+};
 const audio = new Audio();
 const preload = new Audio();
 audio.preload = 'auto';
@@ -76,15 +84,91 @@ $('#cancel-all').onclick = async () => {
     await Promise.all([refreshQueue(), refreshArticle()]);
   } catch (e) { toast(e.message); $('#cancel-all').disabled = false; }
 };
+function pickerModel() {
+  return state.models.find(m => m.id === state.pickerModel) || state.models[0];
+}
+function selectionLabel(s) {
+  const m = state.models.find(m => m.id === s.model);
+  return `${m?.name || s.model} · ${voiceName(s)}${s.style ? ' · ' + s.style : ''}`;
+}
+function renderSavedVoices() {
+  const active = pickerModel();
+  const c = active && choice(active);
+  const markup = state.savedVoices.length ? state.savedVoices.map(s => {
+    const selected = s.model === active?.id && s.voice === c.voice && s.style === c.style.trim();
+    const label = selectionLabel(s);
+    return `<div class="saved-voice ${selected ? 'active' : ''}"><button class="star-button ${s.starred ? 'starred' : ''}" data-star="${s.id}" aria-label="${s.starred ? 'Unstar' : 'Star'} ${escape(label)}" aria-pressed="${!!s.starred}">${s.starred ? '★' : '☆'}</button><button class="saved-voice-select" data-preset="${s.id}" aria-pressed="${selected}">${escape(label)}</button><button class="remove-voice" data-remove-voice="${s.id}" aria-label="Remove saved voice ${escape(label)}">×</button></div>`;
+  }).join('') : '<p class="field-note">Save a family and voice below to use it on any article. Star your favorites to keep them first.</p>';
+  if ($('#voice-selections').innerHTML !== markup) {
+    $('#voice-selections').innerHTML = markup;
+    $$('[data-preset]').forEach(b => b.onclick = () => {
+      const s = state.savedVoices.find(v => v.id === b.dataset.preset);
+      state.pickerModel = s.model;
+      state.choices[s.model] = { voice: s.voice, style: s.style };
+      persistPicker(); renderCards();
+    });
+    $$('[data-star]').forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      try {
+        const s = state.savedVoices.find(v => v.id === b.dataset.star);
+        await api(`/api/voices/${s.id}/star`, { starred: !s.starred });
+        await refreshVoices();
+      } catch (e) { toast(e.message); b.disabled = false; }
+    });
+    $$('[data-remove-voice]').forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      try {
+        const response = await fetch(`/api/voices/${b.dataset.removeVoice}`, { method: 'DELETE' });
+        if (!response.ok) throw new Error('Could not remove this saved voice.');
+        await refreshVoices(); updateCards();
+      } catch (e) { toast(e.message); b.disabled = false; }
+    });
+  }
+  $('#render-all').disabled = !state.savedVoices.some(s => state.models.some(m => m.id === s.model && m.downloaded && m.installed));
+}
+async function refreshVoices() {
+  state.savedVoices = await api('/api/voices');
+  renderSavedVoices();
+}
+function persistPicker() {
+  localStorage.setItem('readroom:picker', JSON.stringify({ model: state.pickerModel, choices: state.choices }));
+}
 function renderCards() {
-  $('#model-cards').innerHTML = state.models.map((model, i) => {
-    const c = choice(model);
-    return `<article class="model-card" data-model="${model.id}"><div class="card-top"><span class="model-symbol">${['≋', '⌁', '✳', '✳'][i] || '≋'}</span><span class="model-size">${model.size} · LOCAL</span></div><h3>${model.name}</h3><p class="description">${model.description}</p><label for="voice-${model.id}">NARRATOR</label><select id="voice-${model.id}" data-voice="${model.id}">${model.voices.map(v => `<option value="${v.id}" ${v.id === c.voice ? 'selected' : ''}>${v.name}</option>`).join('')}</select>${model.styles ? `<details class="style-details"><summary>Adjust delivery</summary><input aria-label="Qwen delivery instructions" id="style-${model.id}" maxlength="400" value="${escape(c.style)}" placeholder="e.g. Warm, calm audiobook narration"></details>` : ''}<div class="model-actions"><button class="button listen-button" data-listen="${model.id}">▶ Listen</button><button class="button render-button" data-render="${model.id}">Render article</button></div><div class="card-status"><span class="render-status">Ready to read</span><a class="download" hidden>WAV ↓</a></div><div class="card-progress"><div></div></div><div class="card-metrics"></div><div class="card-error" hidden></div></article>`;
-  }).join('');
-  $$('[data-voice]').forEach(input => input.onchange = () => { state.choices[input.dataset.voice].voice = input.value; updateCards(); });
-  state.models.filter(m => m.styles).forEach(m => $(`#style-${m.id}`).onchange = e => { choice(m).style = e.target.value; updateCards(); });
-  $$('[data-listen]').forEach(b => b.onclick = () => listenModel(b.dataset.listen).catch(e => toast(e.message)));
-  $$('[data-render]').forEach(b => b.onclick = () => renderModel(b.dataset.render).catch(e => toast(e.message)));
+  const model = pickerModel(); if (!model) return;
+  state.pickerModel = model.id;
+  const c = choice(model);
+  const families = [...new Set(state.models.map(m => m.family))];
+  const variants = state.models.filter(m => m.family === model.family);
+  $('#model-cards').innerHTML = `<article class="model-card voice-picker" data-model="${model.id}">
+    <div class="picker-fields">
+      <div><label for="family-picker">Family</label><select id="family-picker">${families.map(f => `<option ${f === model.family ? 'selected' : ''}>${escape(f)}</option>`).join('')}</select></div>
+      <div ${variants.length === 1 ? 'hidden' : ''}><label for="variant-picker">Model</label><select id="variant-picker">${variants.map(m => `<option value="${m.id}" ${m.id === model.id ? 'selected' : ''}>${escape(m.variant)}</option>`).join('')}</select></div>
+      <div><label for="voice-${model.id}">Voice</label><select id="voice-${model.id}" data-voice="${model.id}">${model.voices.map(v => `<option value="${v.id}" ${v.id === c.voice ? 'selected' : ''}>${escape(v.name)}</option>`).join('')}</select></div>
+    </div>
+    <p class="description">${escape(model.description)} <span class="model-size">${escape(model.size)}</span></p>
+    ${model.styles ? `<div class="style-details"><label for="style-${model.id}">Delivery</label>${model.emotions ? `<select id="style-${model.id}">${model.emotions.map(v => `<option ${v === c.style ? 'selected' : ''}>${v}</option>`).join('')}</select>` : `<input aria-label="Delivery instructions" id="style-${model.id}" maxlength="400" value="${escape(c.style)}" placeholder="e.g. Warm, calm audiobook narration">`}</div>` : ''}
+    <div class="model-actions"><button class="button primary" id="save-voice">Save voice</button><button class="button listen-button" data-listen="${model.id}">▶ Listen</button><button class="button render-button" data-render="${model.id}">Render article</button></div><button class="button outline small timing-button" data-timings="${model.id}" hidden>Generate word timings</button>
+    <div class="card-status"><span class="render-status"></span><a class="download" hidden>WAV ↓</a></div><div class="card-progress"><div></div></div><div class="card-metrics"></div><div class="card-error" hidden></div>
+  </article>`;
+  $('#family-picker').onchange = e => {
+    state.pickerModel = state.models.find(m => m.family === e.target.value).id;
+    persistPicker(); renderCards();
+  };
+  $('#variant-picker').onchange = e => {
+    const next = state.models.find(m => m.id === e.target.value);
+    if (next.voices.some(v => v.id === c.voice)) choice(next).voice = c.voice;
+    state.pickerModel = next.id; persistPicker(); renderCards();
+  };
+  $(`[data-voice]`).onchange = e => { c.voice = e.target.value; persistPicker(); updateCards(); };
+  if (model.styles) $(`#style-${model.id}`).oninput = e => { c.style = e.target.value; persistPicker(); updateCards(); };
+  $('#save-voice').onclick = async () => {
+    $('#save-voice').disabled = true;
+    try { await api('/api/voices', { model: model.id, ...c }); await refreshVoices(); updateCards(); toast('Voice saved. Use it on any article, or star it above.'); }
+    catch (e) { toast(e.message); $('#save-voice').disabled = false; }
+  };
+  $('[data-listen]').onclick = () => listenModel(model.id).catch(e => toast(e.message));
+  $('[data-render]').onclick = () => renderModel(model.id).catch(e => toast(e.message));
+  $('[data-timings]').onclick = e => generateTimings(matching(model), e.currentTarget).catch(err => toast(err.message));
   updateCards();
 }
 function updateCards() {
@@ -96,15 +180,28 @@ function updateCards() {
     const render = card.querySelector('[data-render]');
     const working = r && ['queued', 'loading', 'generating'].includes(r.status);
     label.classList.toggle('busy', !!working);
-    label.textContent = !available ? 'Model not installed' : !r ? 'Ready to read' : ({ queued: 'Queued · waiting for GPU', loading: 'Loading voice into memory…', generating: `${r.ready}/${r.total} chunks saved`, complete: `✓ Full reading saved · ${formatTime(r.audio_seconds)}`, paused: `Stopped · ${r.ready}/${r.total} saved`, error: 'Needs a retry' }[r.status]);
+    label.textContent = !available ? 'Model not installed' : !r ? 'Ready to read' : ({ queued: 'Queued · waiting for its turn', loading: 'Loading voice into memory…', generating: `${r.ready}/${r.total} chunks saved`, complete: `✓ Full reading saved · ${formatTime(r.audio_seconds)}`, paused: `Stopped · ${r.ready}/${r.total} saved`, error: 'Needs a retry' }[r.status]);
+    if (r && state.engine?.rendition === r.id && state.engine.phase === 'aligning') label.textContent = 'Mapping words to saved audio…';
     const needsTimings = model.id === 'kokoro' && r?.status === 'complete' && !r.has_word_timings;
     render.textContent = needsTimings ? 'Enable word highlighting' : !r ? 'Render article' : working ? 'Stop rendering' : r.status === 'complete' ? 'Saved ✓' : 'Resume article';
     render.disabled = !available || (r?.status === 'complete' && !needsTimings);
+    if (model.id !== 'kokoro' && r && r.ready === r.total && !working) {
+      render.textContent = 'Audio saved ✓'; render.disabled = true;
+    }
     card.querySelector('[data-listen]').disabled = !available;
+    updateTimingButton(card.querySelector('[data-timings]'), r, model.id);
     card.querySelector('.card-progress div').style.width = `${r ? r.ready / r.total * 100 : 0}%`;
     card.querySelector('.card-metrics').textContent = r?.ready ? `${r.generation_seconds ? (r.audio_seconds / r.generation_seconds).toFixed(1) + '× real-time' : ''} · ${r.peak_vram_gb.toFixed(1)} GB peak VRAM` : model.license + ' · English';
     const link = card.querySelector('.download'); link.hidden = r?.status !== 'complete'; if (r) link.href = `/api/renditions/${r.id}/download`;
     const error = card.querySelector('.card-error'); error.hidden = !r?.error; error.textContent = r?.error || '';
+  }
+  updateTimingButton($('#generate-timings'), selectedReading());
+  renderSavedVoices();
+  const current = pickerModel();
+  if (current && $('#save-voice')) {
+    const c = choice(current);
+    const saved = state.savedVoices.some(s => s.model === current.id && s.voice === c.voice && s.style === c.style.trim());
+    $('#save-voice').disabled = saved; $('#save-voice').textContent = saved ? 'Voice saved ✓' : 'Save voice';
   }
   const readings = state.article?.renditions || [];
   const saved = $('#saved-readings');
@@ -114,10 +211,30 @@ function updateCards() {
     $$('[data-reading]').forEach(b => b.onclick = () => {
       const r = state.article.renditions.find(x => x.id === b.dataset.reading);
       state.choices[r.model] = { voice: r.voice, style: r.style };
+      state.pickerModel = r.model; persistPicker();
       selectReading(r.id); renderCards(); updatePlayer();
     });
   }
 }
+
+function updateTimingButton(button, reading, modelId = reading?.model) {
+  button.hidden = !modelId || modelId === 'kokoro';
+  const busy = reading?.timing_requested && ['queued', 'loading', 'generating'].includes(reading.status);
+  const audioReady = reading && reading.ready === reading.total;
+  button.disabled = !audioReady || !!reading?.has_word_timings || !!busy || ['queued', 'loading', 'generating'].includes(reading?.status);
+  button.textContent = reading?.has_word_timings ? 'Word timings ready ✓' : busy ? 'Generating word timings…' : 'Generate word timings';
+  button.title = !audioReady ? 'Render the full article first.' : 'Map words to this saved recording for highlighting and click-to-seek.';
+}
+async function generateTimings(reading, button) {
+  if (!reading) return;
+  button.disabled = true;
+  try {
+    await api(`/api/renditions/${reading.id}/timings`, {});
+    await Promise.all([refreshArticle(), refreshQueue()]);
+    toast('Word timings queued. Your saved audio stays unchanged.');
+  } finally { updateCards(); }
+}
+$('#generate-timings').onclick = e => generateTimings(selectedReading(), e.currentTarget).catch(err => toast(err.message));
 
 async function openArticle(id) {
   const token = state.articleLoad = (state.articleLoad || 0) + 1;
@@ -136,11 +253,15 @@ async function openArticle(id) {
   $('#save-text').href = `/api/articles/${doc.id}/text`;
   let sourceOffset = 0;
   $('#article-body').innerHTML = doc.paragraphs.map((p, i) => {
-    const content = p.replace(/\S+|\s+/gu, (word, index) => {
-      if (/^\s/u.test(word)) return word;
-      const start = sourceOffset + Array.from(p.slice(0, index)).length;
-      return `<span class="article-word" data-word-start="${start}">${escape(word)}</span>`;
-    });
+    const segments = sentenceSegments(p);
+    const content = segments.map(segment => {
+      const words = segment.segment.replace(/\S+|\s+/gu, (word, index) => {
+        if (/^\s/u.test(word)) return word;
+        const start = sourceOffset + Array.from(p.slice(0, segment.index + index)).length;
+        return `<span class="article-word" data-word-start="${start}">${escape(word)}</span>`;
+      });
+      return `<span class="article-sentence">${words}</span>`;
+    }).join('');
     sourceOffset += Array.from(p).length + 1;
     return `<p class="article-paragraph" data-paragraph="${i}" tabindex="0" title="Listen from this paragraph">${content}</p>`;
   }).join('');
@@ -191,10 +312,10 @@ function selectReading(id, samePosition = false) {
   $('#time-label').textContent = `${formatTime(state.resumeTime)} / ${formatTime(selectedReading()?.clips[state.chunk]?.duration)}`;
   $('#player').hidden = false; updateCards(); updatePlayer();
 }
-async function queueModel(id, articleId = state.article.id) {
+async function queueModel(id, articleId = state.article.id, savedChoice = null) {
   const model = state.models.find(m => m.id === id);
-  if (model.styles) choice(model).style = $(`#style-${id}`).value;
-  const result = await api(`/api/articles/${articleId}/renditions`, { model: id, ...choice(model) });
+  if (!savedChoice && model.styles && $(`#style-${id}`)) choice(model).style = $(`#style-${id}`).value;
+  const result = await api(`/api/articles/${articleId}/renditions`, { model: id, ...(savedChoice || choice(model)) });
   await Promise.all([refreshArticle(), refreshQueue()]);
   return result.id;
 }
@@ -265,7 +386,7 @@ function updatePlayer() {
   const range = last > p ? `Paragraphs ${p + 1}–${last + 1}` : `Paragraph ${p + 1}`;
   $('#chunk-label').textContent = `${range} of ${state.article.paragraphs.length}`;
   $('#reading-progress').textContent = `${model.name} · ${range.toLowerCase()} of ${state.article.paragraphs.length}`;
-  $$('[data-paragraph]').forEach(el => el.classList.toggle('active', Number(el.dataset.paragraph) >= p && Number(el.dataset.paragraph) <= last));
+  $$('[data-paragraph]').forEach(el => el.classList.toggle('active', state.highlightMode !== 'none' && Number(el.dataset.paragraph) >= p && Number(el.dataset.paragraph) <= last));
   updateWordTargets();
   updateWordHighlight();
   $('#previous').disabled = state.chunk === 0; $('#next').disabled = state.chunk === playbackChunks().length - 1;
@@ -297,7 +418,7 @@ $('#speed').onchange = () => { audio.playbackRate = Number($('#speed').value); }
 $('#render-all').onclick = async () => {
   $('#render-all').disabled = true;
   const articleId = state.article.id;
-  try { for (const m of state.models.filter(m => m.downloaded && m.installed)) await queueModel(m.id, articleId); toast('All available readings queued. Each model will finish before the next starts.'); }
+  try { for (const s of [...state.savedVoices]) { if (state.models.some(m => m.id === s.model && m.downloaded && m.installed)) await queueModel(s.model, articleId, { voice: s.voice, style: s.style }); } toast('Saved voices queued for this article.'); }
   catch (e) { toast(e.message); }
   finally { $('#render-all').disabled = false; }
 };
@@ -336,16 +457,16 @@ $('#load-sample').onclick = async () => {
 async function poll() {
   if (state.refresh) return; state.refresh = true;
   try {
-    const status = await api('/api/status'); state.models = status.models;
+    const status = await api('/api/status'); state.models = status.models; state.engine = status.engine;
     $('#machine-status').textContent = status.engine.phase !== 'idle' ? `${status.models.find(m => m.id === status.engine.model)?.name || 'Model'} · ${status.engine.phase}` : `${status.models.filter(m => m.downloaded).length} models on this machine`;
-    await Promise.all([refreshArticle(), refreshQueue()]);
+    await Promise.all([refreshArticle(), refreshQueue(), refreshVoices()]);
   } catch (e) { $('#machine-status').textContent = 'Connection lost · retrying…'; }
   finally { state.refresh = false; }
 }
 async function init() {
   try {
-    const status = await api('/api/status'); state.models = status.models;
-    await refreshLibrary();
+    const status = await api('/api/status'); state.models = status.models; state.engine = status.engine;
+    await Promise.all([refreshLibrary(), refreshVoices()]);
     const last = localStorage.getItem('readroom:article');
     if (state.articles.length) await openArticle(state.articles.find(a => a.id === last)?.id || state.articles[0].id);
     await poll();
@@ -357,13 +478,26 @@ init();
 
 // Read the media clock every frame: follows seeking and playback-rate changes.
 let highlightedWord = null;
+let highlightedSentence = null;
+function sentenceSegments(text) {
+  const segments = typeof Intl.Segmenter === 'function'
+    ? [...new Intl.Segmenter('en', { granularity: 'sentence' }).segment(text)]
+    : [...text.matchAll(/[^.!?]+[.!?]+(?:[”"']*)\s*|.+$/gu)].map(m => ({ segment: m[0], index: m.index }));
+  const merged = [];
+  for (const segment of segments) {
+    const previous = merged[merged.length - 1];
+    if (previous && /(?:\b(?:Dr|Mr|Mrs|Ms|Prof|St|vs|No)|\b[A-Z]|\be\.g|\bi\.e)\.\s*$/u.test(previous.segment)) previous.segment += segment.segment;
+    else merged.push({ segment: segment.segment, index: segment.index });
+  }
+  return merged;
+}
 function updateWordHighlight() {
   const reading = selectedReading();
   const clip = reading?.clips[state.chunk];
   const words = clip?.words;
   const offset = reading?.chunk_offsets?.[state.chunk];
-  let target = null;
-  if (state.source === clip?.url && !state.waiting && words?.length && offset != null) {
+  let target = null, sentence = null;
+  if (state.highlightMode !== 'none' && state.source === clip?.url && !state.waiting && words?.length && offset != null) {
     const time = audio.currentTime;
     let low = 0, high = words.length;
     while (low < high) {
@@ -371,12 +505,26 @@ function updateWordHighlight() {
       if (words[mid].start_time <= time) low = mid + 1; else high = mid;
     }
     const word = words[low - 1];
-    if (word && time < word.end_time) target = document.querySelector(`[data-word-start="${offset + word.start}"]`);
+    if (word) {
+      const el = document.querySelector(`[data-word-start="${offset + word.start}"]`);
+      if (state.highlightMode === 'word' && time < word.end_time) target = el;
+      if (state.highlightMode === 'sentence' && el) {
+        const current = el.closest('.article-sentence');
+        const next = words[low] && document.querySelector(`[data-word-start="${offset + words[low].start}"]`);
+        // Keep the sentence lit across pauses between its words, but clear it at its end.
+        if (time < word.end_time || next?.closest('.article-sentence') === current) sentence = current;
+      }
+    }
   }
   if (target !== highlightedWord) {
     highlightedWord?.classList.remove('spoken-word');
     target?.classList.add('spoken-word');
     highlightedWord = target;
+  }
+  if (sentence !== highlightedSentence) {
+    highlightedSentence?.classList.remove('spoken-sentence');
+    sentence?.classList.add('spoken-sentence');
+    highlightedSentence = sentence;
   }
 }
 function animateWordHighlight() {

@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .catalog import ROOT, MODELS
-from .engine import engine, rendition_info
+from .engine import engine, rendition_info, queue_rank
 from .fetcher import fetch_article
 from .storage import DATA, database, initialize, article
 from .text import paragraphs_from_text, chunk_paragraphs
@@ -54,6 +54,56 @@ class RenditionInput(BaseModel):
     style: str = Field(default='', max_length=400)
 
 
+class StarInput(BaseModel):
+    starred: bool
+
+
+def validate_selection(body):
+    spec = MODELS.get(body.model)
+    if not spec:
+        raise HTTPException(422, 'Unknown model.')
+    voice = body.voice or spec['default_voice']
+    if voice not in [v['id'] for v in spec['voices']]:
+        raise HTTPException(422, 'Unknown voice for this model.')
+    style = body.style.strip() if spec['styles'] else ''
+    if spec.get('emotions'):
+        style = style or 'neutral'
+        if style not in spec['emotions']:
+            raise HTTPException(422, 'Unknown delivery for this model.')
+    return voice, style
+
+
+@app.get('/api/voices')
+def saved_voices():
+    with database() as db:
+        return [dict(r) for r in db.execute('SELECT * FROM voice_selections ORDER BY starred DESC, created, id')]
+
+
+@app.post('/api/voices')
+def save_voice(body: RenditionInput):
+    voice, style = validate_selection(body)
+    key = hashlib.sha256(json.dumps([body.model, voice, style]).encode()).hexdigest()[:24]
+    with database() as db:
+        db.execute('INSERT OR IGNORE INTO voice_selections (id,model,voice,style,created) VALUES (?,?,?,?,?)', (key, body.model, voice, style, datetime.now(timezone.utc).isoformat()))
+        return dict(db.execute('SELECT * FROM voice_selections WHERE id=?', (key,)).fetchone())
+
+
+@app.post('/api/voices/{key}/star')
+def star_voice(key: str, body: StarInput):
+    with database() as db:
+        if not db.execute('UPDATE voice_selections SET starred=? WHERE id=?', (int(body.starred), key)).rowcount:
+            raise HTTPException(404, 'Saved voice not found.')
+    return {'starred': body.starred}
+
+
+@app.delete('/api/voices/{key}')
+def remove_voice(key: str):
+    with database() as db:
+        if not db.execute('DELETE FROM voice_selections WHERE id=?', (key,)).rowcount:
+            raise HTTPException(404, 'Saved voice not found.')
+    return {'deleted': True}
+
+
 def require_article(article_id):
     doc = article(article_id)
     if not doc:
@@ -81,7 +131,7 @@ def articles():
 def render_queue():
     with database() as db:
         rows = db.execute("SELECT r.*, a.title FROM renditions r JOIN articles a ON a.id=r.article_id WHERE r.status IN ('queued','loading','generating') ORDER BY r.queued_at,r.rowid").fetchall()
-    jobs = [rendition_info(row) for row in rows]
+    jobs = [rendition_info(row) for row in sorted(rows, key=queue_rank)]
     active = next((r for r in jobs if r['id'] == engine.current), None)
     return {'active': active, 'queued': [r for r in jobs if r is not active]}
 
@@ -137,29 +187,50 @@ def article_text(article_id: str):
 @app.post('/api/articles/{article_id}/renditions')
 def create_rendition(article_id: str, body: RenditionInput):
     doc = require_article(article_id)
-    spec = MODELS.get(body.model)
-    if not spec:
-        raise HTTPException(422, 'Unknown model.')
+    voice, style = validate_selection(body)
     if not (ROOT / 'models' / body.model / '.ready.json').exists():
         raise HTTPException(409, 'This model is still downloading.')
-    voice = body.voice or spec['default_voice']
-    if voice not in [v['id'] for v in spec['voices']]:
-        raise HTTPException(422, 'Unknown voice for this model.')
-    style = body.style.strip() if spec['styles'] else ''
     rid = hashlib.sha256(json.dumps([article_id, body.model, voice, style, 'three-paragraphs-v1']).encode()).hexdigest()[:24]
     with engine.lock, database() as db:
         db.execute('BEGIN IMMEDIATE')
         existing = db.execute('SELECT * FROM renditions WHERE id=?', (rid,)).fetchone()
-        enqueue = not existing or existing['status'] in ('error', 'paused') or (existing['status'] == 'complete' and body.model == 'kokoro' and not rendition_info(existing)['has_word_timings'])
+        saved = rendition_info(existing) if existing else None
+        enqueue = not existing or (existing['status'] in ('error', 'paused') and (not existing['timing_requested'] or saved['ready'] < saved['total'])) or (existing['status'] == 'complete' and body.model == 'kokoro' and not saved['has_word_timings'])
         if not existing:
             now = datetime.now(timezone.utc).isoformat()
             db.execute('INSERT INTO renditions (id,article_id,model,voice,style,status,error,created,chunks,queued_at) VALUES (?,?,?,?,?,?,?,?,?,?)', (rid, article_id, body.model, voice, style, 'queued', None, now, json.dumps(chunk_paragraphs(doc['paragraphs'])), now))
         elif enqueue:
-            db.execute("UPDATE renditions SET status='queued', error=NULL,queued_at=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), rid))
+            db.execute("UPDATE renditions SET status='queued', error=NULL,timing_requested=0,queued_at=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), rid))
         db.commit()
         if enqueue:
             engine.enqueue(rid)
     return {'id': rid}
+
+
+@app.post('/api/renditions/{rid}/timings')
+def generate_timings(rid: str):
+    with engine.lock, database() as db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT * FROM renditions WHERE id=?', (rid,)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Reading not found.')
+        if row['model'] == 'kokoro':
+            raise HTTPException(409, 'Kokoro produces native word timings when rendering.')
+        reading = rendition_info(row)
+        if reading['ready'] != reading['total']:
+            raise HTTPException(409, 'Finish rendering the article before generating word timings.')
+        if reading['has_word_timings']:
+            return {'id': rid, 'status': 'ready'}
+        if row['status'] in ('queued', 'loading', 'generating'):
+            if row['timing_requested']:
+                return {'id': rid, 'status': 'queued'}
+            raise HTTPException(409, 'Wait for this reading to finish rendering.')
+        if not (ROOT / 'models/aligner/.ready.json').exists() or not (ROOT / '.venv-light/bin/python').exists():
+            raise HTTPException(409, 'The word aligner is not installed.')
+        db.execute("UPDATE renditions SET timing_requested=1,status='queued',error=NULL,queued_at=? WHERE id=?", (datetime.now(timezone.utc).isoformat(), rid))
+        db.commit()
+        engine.enqueue(rid)
+    return {'id': rid, 'status': 'queued'}
 
 
 @app.post('/api/renditions/{rid}/pause')

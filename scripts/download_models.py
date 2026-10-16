@@ -15,6 +15,13 @@ SPECS = {
     'qwen-small': ('Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice', ['*.json', '*.safetensors', '*.txt', '*.model', '*.tiktoken', 'README.md', 'LICENSE']),
     'chatterbox': ('ResembleAI/chatterbox-turbo', ['*.json', '*.txt', 'conds.pt', 've.safetensors', 's3gen_meanflow.safetensors', 't3_turbo_v1.safetensors', 'README.md', 'LICENSE']),
 }
+for key in ('kitten-mini', 'kitten-micro', 'kitten-nano'):
+    SPECS[key] = (MANIFEST[key]['repo'], ['*.json', '*.onnx', '*.npz', 'README.md', 'LICENSE*'])
+SPECS.update({
+    'pocket': (MANIFEST['pocket']['repo'], ['languages/english/*', 'README.md', 'LICENSE*']),
+    'paradee': (MANIFEST['paradee']['repo'], ['config.json', 'onnx/paradee_int8.onnx', 'README.md', 'LICENSE*']),
+    'aligner': (MANIFEST['aligner']['repo'], ['*.json', 'model.safetensors', 'README.md']),
+})
 
 def download(item):
     key, (repo, patterns) = item

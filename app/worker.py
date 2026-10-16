@@ -32,7 +32,11 @@ def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     path = ROOT / 'models' / kind
     started = time.monotonic()
-    if kind == 'kokoro':
+    if kind == 'aligner':
+        from app.alignment import EnglishAligner
+        device = 'cpu'
+        model = EnglishAligner()
+    elif kind == 'kokoro':
         import espeakng_loader
         from phonemizer.backend.espeak.wrapper import EspeakWrapper
         EspeakWrapper.set_library(espeakng_loader.get_library_path())
@@ -46,18 +50,48 @@ def main():
     elif kind == 'chatterbox':
         from chatterbox.tts_turbo import ChatterboxTurboTTS
         model = ChatterboxTurboTTS.from_local(str(path), device=device)
+    elif kind.startswith('kitten-'):
+        from kittenml import KittenTTS
+        device = 'cpu'
+        model = KittenTTS(str(path), backend='cpu')
+    elif kind == 'paradee':
+        import espeakng_loader
+        from phonemizer.backend.espeak.wrapper import EspeakWrapper
+        EspeakWrapper.set_library(espeakng_loader.get_library_path())
+        os.environ['ESPEAK_DATA_PATH'] = espeakng_loader.get_data_path()
+        from paradee import Paradee
+        device = 'cpu'
+        model = Paradee(model_path=str(path / 'onnx/paradee_int8.onnx'), config_path=str(path / 'config.json'), threads=4)
+    elif kind == 'pocket':
+        import tempfile
+        import yaml
+        from pocket_tts import TTSModel
+        from pocket_tts.utils.config import CONFIGS_DIR
+        device = 'cpu'
+        config = yaml.safe_load((CONFIGS_DIR / 'english.yaml').read_text())
+        config['weights_path'] = str(path / 'languages/english/model.safetensors')
+        config['weights_path_without_voice_cloning'] = None
+        config['flow_lm']['lookup_table']['tokenizer_path'] = str(path / 'languages/english/tokenizer.json')
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml') as temp:
+            yaml.safe_dump(config, temp)
+            temp.flush()
+            model = TTSModel.load_model(config=temp.name)
+        voices = {}
     else:
         raise ValueError('Unknown model')
     send({'ready': True, 'load_seconds': time.monotonic() - started, 'device': device})
     for line in sys.stdin:
         try:
             request = json.loads(line)
+            if kind == 'aligner':
+                send({'ok': True, 'words': model.align(request['text'], request['audio'])})
+                continue
             started = time.monotonic()
             torch.manual_seed(42)
             if device == 'cuda':
                 torch.cuda.reset_peak_memory_stats()
             words = None
-            with torch.inference_mode():
+            with torch.no_grad():
                 if kind == 'kokoro':
                     voice = str(path / 'voices' / (request['voice'] + '.pt'))
                     outputs = list(pipelines[request['voice'][0]](request['text'], voice=voice, speed=1))
@@ -67,6 +101,18 @@ def main():
                 elif kind in ('qwen', 'qwen-small'):
                     audio, sr = model.generate_custom_voice(text=request['text'], language='English', speaker=request['voice'], instruct=(request.get('style') or 'Read naturally and clearly, with calm pacing. Read the text exactly.') if kind == 'qwen' else None, max_new_tokens=2048)
                     samples = audio[0]
+                elif kind.startswith('kitten-'):
+                    samples = model.generate(request['text'], voice=request['voice'], clean_text=True)
+                    sr = 24000
+                elif kind == 'paradee':
+                    samples = model(request['text'])
+                    sr = 24000
+                elif kind == 'pocket':
+                    voice = request['voice']
+                    if voice not in voices:
+                        voices[voice] = model.get_state_for_audio_prompt(str(path / 'languages/english/embeddings' / (voice + '.safetensors')))
+                    samples = model.generate_audio(voices[voice], request['text']).detach().cpu().numpy()
+                    sr = model.sample_rate
                 else:
                     # Turbo has a shorter speech-token limit: synthesize safe spans
                     # inside the three-paragraph range, then concatenate continuously.

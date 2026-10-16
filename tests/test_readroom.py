@@ -316,3 +316,170 @@ def test_existing_kokoro_reading_can_upgrade_word_timings(client, monkeypatch):
     assert reading['chunk_offsets'] == [0]
     client.post(f"/api/articles/{doc['id']}/renditions", json={'model':'kokoro'})
     assert queued == [rid]  # Timed audio is reused.
+
+
+def test_saved_voices_deduplicate_and_persist_favorites(client):
+    first = client.post('/api/voices', json={'model': 'kokoro', 'voice': 'af_heart'}).json()
+    second = client.post('/api/voices', json={'model': 'kokoro', 'voice': 'af_bella'}).json()
+    assert first['id'] != second['id']
+    assert client.post('/api/voices', json={'model': 'kokoro', 'voice': 'af_heart', 'style': 'ignored'}).json()['id'] == first['id']
+    assert client.post(f"/api/voices/{second['id']}/star", json={'starred': True}).status_code == 200
+    initialize()  # Durable selections survive service initialization.
+    saved = client.get('/api/voices').json()
+    assert len(saved) == 2 and saved[0]['id'] == second['id'] and saved[0]['starred'] == 1
+    assert client.post('/api/voices', json={'model': 'kokoro', 'voice': 'af_bella'}).json()['starred'] == 1
+    assert client.post(f"/api/voices/{second['id']}/star", json={'starred': False}).status_code == 200
+    assert client.delete(f"/api/voices/{first['id']}").status_code == 200
+    assert client.delete(f"/api/voices/{second['id']}").status_code == 200
+
+
+def test_saved_voice_validation_and_style_identity(client):
+    assert client.post('/api/voices', json={'model': 'invalid'}).status_code == 422
+    assert client.post('/api/voices', json={'model': 'kokoro', 'voice': 'Ryan'}).status_code == 422
+    one = client.post('/api/voices', json={'model': 'qwen', 'style': ' Calm '}).json()
+    two = client.post('/api/voices', json={'model': 'qwen', 'style': 'Calm'}).json()
+    three = client.post('/api/voices', json={'model': 'qwen', 'style': 'Excited'}).json()
+    assert one['id'] == two['id'] != three['id']
+    assert client.post(f"/api/voices/{one['id']}/star", json={'starred': True}, headers={'origin': 'https://evil.example'}).status_code == 403
+    assert client.delete(f"/api/voices/{one['id']}", headers={'origin': 'https://evil.example'}).status_code == 403
+    assert client.post('/api/voices/missing/star', json={'starred': True}).status_code == 404
+
+
+def test_existing_other_model_aligns_without_regenerating_audio(client):
+    import time
+    from app.engine import Engine
+    doc = client.post('/api/articles', json={'title': 'Alignment reuse', 'text': 'Existing saved speech.'}).json()
+    rid = client.post(f"/api/articles/{doc['id']}/renditions", json={'model': 'qwen', 'voice': 'Ryan'}).json()['id']
+    key = clip_key('qwen', 'Ryan', '', doc['chunks'][0]['text'])
+    path = DATA / 'audio' / (key + '.wav')
+    with wave.open(str(path), 'wb') as wav:
+        wav.setparams((1, 2, 24000, 0, 'NONE', 'not compressed'))
+        wav.writeframes(b'\0' * 4800)
+    original = path.read_bytes()
+    with database() as db:
+        db.execute('INSERT INTO clips VALUES (?,?,?,?,?)', (key, .1, .01, .5, 24000))
+        db.execute("UPDATE renditions SET status='complete' WHERE id=?", (rid,))
+    assert client.post(f"/api/articles/{doc['id']}/renditions", json={'model': 'qwen'}).json()['id'] == rid
+    assert client.get(f"/api/articles/{doc['id']}").json()['renditions'][0]['status'] == 'complete'
+    response = client.post(f'/api/renditions/{rid}/timings')
+    assert response.status_code == 200 and response.json()['status'] == 'queued'
+    assert client.post(f'/api/renditions/{rid}/timings').status_code == 200
+    class AlignmentOnlyEngine(Engine):
+        def load(self, model, ticket):
+            raise AssertionError('Cached speech must not be regenerated')
+        def align_clip(self, text, cache_key, ticket):
+            assert text == doc['chunks'][0]['text']
+            (DATA / 'audio' / (cache_key + '.words.json')).write_text(json.dumps([{'start': 0, 'end': 8, 'start_time': 0, 'end_time': .1}]))
+    e = AlignmentOnlyEngine()
+    e.thread.start(); e.enqueue(rid)
+    try:
+        deadline = time.monotonic() + 3
+        while True:
+            with database() as db:
+                status = db.execute('SELECT status FROM renditions WHERE id=?', (rid,)).fetchone()[0]
+            if status == 'complete':
+                break
+            assert status != 'error' and time.monotonic() < deadline
+            time.sleep(.01)
+        assert path.read_bytes() == original
+        reading = client.get(f"/api/articles/{doc['id']}").json()['renditions'][0]
+        assert reading['has_word_timings']
+        assert '?' not in reading['clips'][0]['url']  # Keep currently playing audio matched to new timings.
+    finally:
+        e.close()
+
+
+def test_alignment_cancel_keeps_cached_audio(client):
+    import subprocess
+    import sys
+    import time
+    from app.engine import Engine
+    doc = client.post('/api/articles', json={'title': 'Cancel word mapping', 'text': 'Keep this existing recording.'}).json()
+    rid = client.post(f"/api/articles/{doc['id']}/renditions", json={'model': 'qwen'}).json()['id']
+    key = clip_key('qwen', 'Ryan', '', doc['chunks'][0]['text'])
+    path = DATA / 'audio' / (key + '.wav')
+    path.write_bytes(b'cached audio')
+    with database() as db:
+        db.execute('INSERT INTO clips VALUES (?,?,?,?,?)', (key, 1, .1, 0, 24000))
+    with database() as db:
+        db.execute("UPDATE renditions SET status='complete' WHERE id=?", (rid,))
+    assert client.post(f'/api/renditions/{rid}/timings').status_code == 200
+    class BlockingAligner(Engine):
+        def align_clip(self, text, key, ticket):
+            with self.lock:
+                self.check(ticket)
+                self.aligner = subprocess.Popen([sys.executable, '-u', '-c', 'import time; time.sleep(60)'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            self.receive(process=self.aligner)
+    e = BlockingAligner(); e.thread.start(); e.enqueue(rid)
+    try:
+        deadline = time.monotonic() + 3
+        while not e.aligner:
+            assert time.monotonic() < deadline
+            time.sleep(.01)
+        process = e.aligner
+        assert e.cancel(rid)
+        process.wait(timeout=2)
+        assert path.read_bytes() == b'cached audio'
+        with database() as db:
+            assert db.execute('SELECT status FROM renditions WHERE id=?', (rid,)).fetchone()[0] == 'paused'
+    finally:
+        e.close()
+
+
+def test_first_sections_precede_continuations_and_new_arrivals(client):
+    import threading
+    import time
+    from unittest.mock import MagicMock
+    from app.engine import Engine
+    jobs = []
+    for label in ('Alpha', 'Beta', 'Gamma'):
+        text = '\n\n'.join(f'{label} paragraph {i}.' for i in range(7))
+        doc = client.post('/api/articles', json={'title': label + ' scheduler check', 'text': text}).json()
+        jobs.append(client.post(f"/api/articles/{doc['id']}/renditions", json={'model': 'qwen'}).json()['id'])
+    first_started, release = threading.Event(), threading.Event()
+    order = []
+    class SectionEngine(Engine):
+        def load(self, model, ticket):
+            if self.process is None:
+                self.process = MagicMock()
+                self.process.poll.return_value = None
+                self.process.stdin = io.StringIO()
+                self.process.stdout = io.StringIO()
+            self.loaded_model = model
+        def receive(self, timeout=600, process=None):
+            request = json.loads(self.process.stdin.getvalue().splitlines()[-1])
+            order.append((request['text'].split()[0], request['text'].split()[2]))
+            if len(order) == 1:
+                first_started.set()
+                assert release.wait(3)
+            with wave.open(request['output'], 'wb') as wav:
+                wav.setparams((1, 2, 24000, 0, 'NONE', 'not compressed'))
+                wav.writeframes(b'\0' * 480)
+            return {'ok': True, 'duration': .01, 'generation_seconds': .01, 'peak_vram_gb': 0, 'sample_rate': 24000, 'words': None}
+        def align_clip(self, *args):
+            raise AssertionError('Rendering must not implicitly generate word timings')
+    e = SectionEngine()
+    e.enqueue(jobs[0]); e.enqueue(jobs[1]); e.thread.start()
+    try:
+        assert first_started.wait(3)
+        e.enqueue(jobs[2])  # A new voice arrives while Alpha's first section is running.
+        release.set()
+        deadline = time.monotonic() + 5
+        while True:
+            with database() as db:
+                statuses = [db.execute('SELECT status FROM renditions WHERE id=?', (rid,)).fetchone()[0] for rid in jobs]
+            if statuses == ['complete'] * 3:
+                break
+            assert 'error' not in statuses and time.monotonic() < deadline
+            time.sleep(.01)
+        assert order == [('Alpha', '0.'), ('Beta', '0.'), ('Gamma', '0.'), ('Alpha', '3.'), ('Alpha', '6.'), ('Beta', '3.'), ('Beta', '6.'), ('Gamma', '3.'), ('Gamma', '6.')]
+    finally:
+        release.set(); e.close()
+
+
+def test_explicit_timing_request_requires_saved_audio(client):
+    doc = client.post('/api/articles', json={'title': 'No audio yet', 'text': 'Render this before aligning.'}).json()
+    rid = client.post(f"/api/articles/{doc['id']}/renditions", json={'model': 'qwen'}).json()['id']
+    assert client.post(f'/api/renditions/{rid}/timings').status_code == 409
+    assert client.post('/api/renditions/missing/timings').status_code == 404
+    assert client.post(f'/api/renditions/{rid}/timings', headers={'origin': 'https://evil.example'}).status_code == 403

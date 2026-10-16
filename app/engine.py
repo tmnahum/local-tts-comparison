@@ -6,6 +6,7 @@ import selectors
 import subprocess
 import threading
 import time
+from itertools import count
 
 from .catalog import ROOT, MODELS
 from .storage import DATA, database, article
@@ -48,7 +49,9 @@ def rendition_info(row):
     for clip in result['clips']:
         if clip:
             clip['words'] = word_timings(clip['key'])
-            if clip['words'] is not None:
+            # Only Kokoro timing upgrades regenerate the waveform. Alignment adds
+            # metadata to unchanged audio, so keep its URL stable during playback.
+            if clip['words'] is not None and result['model'] == 'kokoro':
                 clip['url'] += '?timing=1'
     result['chunk_offsets'] = chunk_offsets(doc['paragraphs'], result['chunks'])
     result['has_word_timings'] = bool(result['clips']) and all(c and c['words'] is not None for c in result['clips'])
@@ -64,12 +67,23 @@ class Cancelled(Exception):
     pass
 
 
+def queue_rank(row):
+    """First audio sections precede continuations; preserve arrival order within each lane."""
+    chunks = json.loads(row['chunks']) if row['chunks'] else article(row['article_id'])['chunks']
+    first = clip_key(row['model'], row['voice'], row['style'], chunks[0]['text']) if chunks else None
+    priority = 0 if first and not clip_info(first) and not row['timing_requested'] else 1
+    return priority, row['queued_at'] or row['created']
+
+
 class Engine:
     def __init__(self):
-        self.queue = queue.Queue()
+        self.queue = queue.PriorityQueue()
+        self.sequence = count()
         self.lock = threading.RLock()
         self.tickets = {}
         self.process = None
+        self.aligner = None
+        self.aligner_log = None
         self.log = None
         self.loaded_model = None
         self.current = None
@@ -87,9 +101,13 @@ class Engine:
 
     def enqueue(self, rendition_id):
         with self.lock:
+            with database() as db:
+                row = db.execute('SELECT * FROM renditions WHERE id=?', (rendition_id,)).fetchone()
+            if not row:
+                return
             ticket = threading.Event()
             self.tickets[rendition_id] = ticket
-            self.queue.put((rendition_id, ticket))
+            self.queue.put((*queue_rank(row), next(self.sequence), rendition_id, ticket))
 
     def cancel(self, rid):
         with self.lock:
@@ -101,6 +119,8 @@ class Engine:
                     ticket.set()
                 if self.current == rid and self.process and self.process.poll() is None:
                     self.process.kill()  # Wake the reader immediately; only the worker thread closes pipes.
+                if self.current == rid and self.aligner and self.aligner.poll() is None:
+                    self.aligner.kill()
             return bool(changed)
 
     def cancel_all(self):
@@ -110,6 +130,7 @@ class Engine:
             return sum(self.cancel(row['id']) for row in rows)
 
     def unload(self):
+        self.unload_aligner()
         if self.process:
             if self.process.poll() is None:
                 self.process.terminate()
@@ -134,7 +155,9 @@ class Engine:
                 ticket.set()
             if self.process and self.process.poll() is None:
                 self.process.kill()
-            self.queue.put(None)
+            if self.aligner and self.aligner.poll() is None:
+                self.aligner.kill()
+            self.queue.put((-1, '', -1, None, None))
         self.thread.join(timeout=10)
         self.unload()
 
@@ -142,8 +165,8 @@ class Engine:
         if self.stopping or ticket.is_set():
             raise Cancelled()
 
-    def receive(self, timeout=600):
-        process = self.process
+    def receive(self, timeout=600, process=None):
+        process = process or self.process
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
             if not selector.select(timeout):
@@ -152,6 +175,46 @@ class Engine:
         if not line:
             raise RuntimeError('Model process exited. See data/logs/' + str(self.loaded_model) + '.log.')
         return json.loads(line)
+
+    def unload_aligner(self):
+        if self.aligner:
+            if self.aligner.poll() is None:
+                self.aligner.kill()
+            self.aligner.wait(timeout=5)
+            self.aligner.stdin.close()
+            self.aligner.stdout.close()
+            self.aligner = None
+        if self.aligner_log:
+            self.aligner_log.close()
+            self.aligner_log = None
+
+    def align_clip(self, text, key, ticket):
+        with self.lock:
+            self.check(ticket)
+            fresh = not self.aligner or self.aligner.poll() is not None
+            if fresh:
+                self.unload_aligner()
+                self.aligner_log = open(DATA / 'logs/aligner.log', 'a')
+                self.aligner = subprocess.Popen([str(ROOT / '.venv-light/bin/python'), str(ROOT / 'app/worker.py'), 'aligner'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.aligner_log, text=True, bufsize=1, cwd=ROOT)
+        if fresh:
+            message = self.receive(process=self.aligner)
+            self.check(ticket)
+            if not message.get('ready'):
+                raise RuntimeError(message.get('error', 'Word aligner failed to load.'))
+        with self.lock, database() as db:
+            self.check(ticket)
+            self.phase = 'aligning'
+            db.execute("UPDATE renditions SET status='generating' WHERE id=?", (self.current,))
+            self.aligner.stdin.write(json.dumps({'text': text, 'audio': str(DATA / 'audio' / (key + '.wav'))}) + '\n')
+            self.aligner.stdin.flush()
+        result = self.receive(process=self.aligner)
+        with self.lock:
+            self.check(ticket)
+            if not result.get('ok'):
+                raise RuntimeError(result.get('error', 'Word alignment failed.'))
+            metadata = DATA / 'audio' / (key + '.words.partial.json')
+            metadata.write_text(json.dumps(result['words']))
+            metadata.replace(DATA / 'audio' / (key + '.words.json'))
 
     def load(self, model, ticket):
         with self.lock:
@@ -179,10 +242,12 @@ class Engine:
                 with self.lock:
                     self.unload()
                 continue
-            if job is None:
+            _, _, _, rid, ticket = job
+            if rid is None:
                 return
-            rid, ticket = job
             output = None
+            yielded = False
+            worked = False
             try:
                 with self.lock:
                     self.check(ticket)
@@ -190,13 +255,36 @@ class Engine:
                         row = db.execute('SELECT * FROM renditions WHERE id=?', (rid,)).fetchone()
                     if not row or row['status'] != 'queued':
                         continue
+                    rank = queue_rank(row)
+                    if rank != job[:2]:
+                        self.queue.put((*rank, next(self.sequence), rid, ticket))
+                        yielded = True
+                        continue
                     self.current = rid
                 chunks = json.loads(row['chunks']) if row['chunks'] else article(row['article_id'])['chunks']
                 for chunk in chunks:
                     self.check(ticket)
+                    # Reconsider priority after each completed section. Keep the
+                    # same cancellation ticket and original arrival time on yield.
+                    with self.lock:
+                        if worked and not self.queue.empty():
+                            self.check(ticket)
+                            with database() as db:
+                                db.execute("UPDATE renditions SET status='queued' WHERE id=?", (rid,))
+                            self.queue.put((*queue_rank(row), next(self.sequence), rid, ticket))
+                            yielded = True
+                            break
                     key = clip_key(row['model'], row['voice'], row['style'], chunk['text'])
-                    if clip_info(key) and (row['model'] != 'kokoro' or word_timings(key) is not None):
-                        continue
+                    if clip_info(key):
+                        if word_timings(key) is not None:
+                            continue
+                        if row['model'] != 'kokoro':
+                            if row['timing_requested']:
+                                self.align_clip(chunk['text'], key, ticket)
+                                worked = True
+                            continue
+                    if row['timing_requested']:
+                        raise RuntimeError('Saved audio is missing. Render the article again before generating timings.')
                     with self.lock, database() as db:
                         self.check(ticket)
                         db.execute("UPDATE renditions SET status=? WHERE id=?", ('loading' if self.loaded_model != row['model'] else 'generating', rid))
@@ -220,9 +308,11 @@ class Engine:
                             metadata.replace(DATA / 'audio' / (key + '.words.json'))
                         (DATA / 'audio' / (rid + '-full.wav')).unlink(missing_ok=True)
                         db.execute('INSERT OR REPLACE INTO clips VALUES (?,?,?,?,?)', (key, result['duration'], result['generation_seconds'], result['peak_vram_gb'], result['sample_rate']))
-                with self.lock, database() as db:
-                    self.check(ticket)
-                    db.execute("UPDATE renditions SET status='complete', error=NULL WHERE id=?", (rid,))
+                    worked = True
+                if not yielded:
+                    with self.lock, database() as db:
+                        self.check(ticket)
+                        db.execute("UPDATE renditions SET status='complete', error=NULL,timing_requested=0 WHERE id=?", (rid,))
             except Exception as exc:
                 with self.lock:
                     if not ticket.is_set() and not self.stopping:
@@ -233,7 +323,7 @@ class Engine:
                 if output:
                     output.unlink(missing_ok=True)
                 with self.lock:
-                    if self.tickets.get(rid) is ticket:
+                    if not yielded and self.tickets.get(rid) is ticket:
                         del self.tickets[rid]
                     self.phase = 'idle'
                     self.current = None

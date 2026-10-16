@@ -14,5 +14,29 @@
   "qwen-small": {
     "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
     "revision": "85e237c12c027371202489a0ec509ded67b5e4b5"
+  },
+  "kitten-mini": {
+    "repo": "KittenML/kitten-tts-mini-0.8",
+    "revision": "c02725660cea441db4c383af69f1f26f5cd00947"
+  },
+  "kitten-micro": {
+    "repo": "KittenML/kitten-tts-micro-0.8",
+    "revision": "1ccf72b2c2048fd17efac7de2fab32d10e225084"
+  },
+  "kitten-nano": {
+    "repo": "KittenML/kitten-tts-nano-0.8-int8",
+    "revision": "84781d74e29ee25217551556398b42f80593a813"
+  },
+  "pocket": {
+    "repo": "kyutai/pocket-tts-without-voice-cloning",
+    "revision": "575d14372df89a4534bcb989870a34e77544b09f"
+  },
+  "paradee": {
+    "repo": "sahilmahendrakar/Paradee-8M-v1.0",
+    "revision": "c7f83f86c04e84d0ae94cbe1aad7618e0544f80a"
+  },
+  "aligner": {
+    "repo": "facebook/wav2vec2-base-960h",
+    "revision": "22aad52d435eb6dbaf354bdad9b0da84ce7d6156"
   }
 }

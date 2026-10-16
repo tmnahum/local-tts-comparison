@@ -26,3 +26,31 @@ MODELS = {
         'environment': '.venv-tts', 'styles': False,
     },
 }
+
+for key, spec in MODELS.items():
+    spec['family'] = 'Qwen3-TTS' if key.startswith('qwen') else ('Chatterbox' if key == 'chatterbox' else 'Kokoro')
+    spec['variant'] = spec['size']
+
+for variant, size in [('mini', '80M'), ('micro', '40M'), ('nano', '15M · int8')]:
+    MODELS['kitten-' + variant] = {
+        'name': 'Kitten ' + variant.title(), 'family': 'Kitten', 'variant': variant.title() + ' · ' + size,
+        'size': size, 'description': 'Eight English narrators in a compact CPU model.',
+        'license': 'Apache-2.0', 'default_voice': 'Bella',
+        'voices': [{'id': v, 'name': v} for v in ['Bella', 'Jasper', 'Luna', 'Bruno', 'Rosie', 'Hugo', 'Kiki', 'Leo']],
+        'environment': '.venv-light', 'styles': False,
+    }
+MODELS.update({
+    'pocket': {
+        'name': 'Pocket TTS', 'family': 'Pocket TTS', 'variant': '100M · English', 'size': '100M',
+        'description': 'CPU speech with a broad collection of English narrators.', 'license': 'MIT',
+        'default_voice': 'alba', 'voices': [{'id': v, 'name': v.replace('_', ' ').title()} for v in ['alba', 'anna', 'azelma', 'bill_boerst', 'caro_davy', 'charles', 'cosette', 'eponine', 'eve', 'fantine', 'george', 'jane', 'javert', 'jean', 'marius', 'mary', 'michael', 'paul', 'peter_yearsley', 'stuart_bell', 'vera']],
+        'environment': '.venv-light', 'styles': False,
+    },
+    'paradee': {
+        'name': 'Paradee', 'family': 'Paradee', 'variant': '8M · int8', 'size': '8M',
+        'description': 'A tiny distillation of Kokoro’s Heart voice.', 'license': 'Apache-2.0',
+        'default_voice': 'af_heart', 'voices': [{'id': 'af_heart', 'name': 'Heart · American'}],
+        'environment': '.venv-light', 'styles': False,
+    },
+
+})
